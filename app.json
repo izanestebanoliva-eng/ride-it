@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "moto-strava",
-    "slug": "moto-strava",
+    "name": "Ride It",
+    "slug": "ride-it",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "motostrava",
+    "scheme": "rideit",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -33,7 +33,7 @@
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE"
       ],
-      "package": "com.izanoliva.motostrava"
+      "package": "com.izanoliva.rideit"
     },
     "web": {
       "output": "static",
@@ -67,3 +67,5 @@
     }
   }
 }
+
+
