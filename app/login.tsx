@@ -9,6 +9,15 @@ import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
 import { loginUser } from "../src/lib/auth-storage";
 
+function extractApiDetail(error: any): string {
+  const msg = String(error?.message ?? "");
+  try {
+    const parsed = JSON.parse(msg);
+    if (parsed?.detail) return String(parsed.detail);
+  } catch {}
+  return msg;
+}
+
 export default function LoginScreen() {
   const iconColor = useThemeColor({}, "icon");
   const border = useThemeColor({}, "border");
@@ -25,33 +34,46 @@ export default function LoginScreen() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const disabled = useMemo(() => {
-    return email.trim().length < 3 || password.length < 4;
-  }, [email, password]);
+    return loading || email.trim().length < 3 || password.length < 4;
+  }, [email, password, loading]);
 
   async function onLogin() {
+    if (disabled) return;
+    setLoading(true);
     try {
       await loginUser({ email, password });
-      router.back(); // vuelve a Perfil y ya se verá logueado
+      router.replace("/profile");
     } catch (e: any) {
-      const code = String(e?.message ?? "");
-      if (code === "NOT_FOUND") {
+      const detail = extractApiDetail(e);
+
+      if (detail.includes("NOT_FOUND")) {
         Alert.alert("No existe", "No hay ninguna cuenta con ese email.");
         return;
       }
-      if (code === "BAD_PASSWORD") {
+      if (detail.includes("BAD_PASSWORD")) {
         Alert.alert("Contraseña incorrecta", "Revisa la contraseña.");
         return;
       }
-      Alert.alert("Error", "No se pudo iniciar sesión.");
+      if (detail.includes("Network request failed") || detail.includes("Failed to fetch")) {
+        Alert.alert(
+          "Sin conexión",
+          "No se pudo conectar con el servidor. Revisa que EXPO_PUBLIC_API_URL apunte a Render."
+        );
+        return;
+      }
+
+      Alert.alert("Error", detail || "No se pudo iniciar sesión.");
+    } finally {
+      setLoading(false);
     }
   }
 
   return (
     <ThemedView style={styles.screen}>
       <SafeAreaView style={styles.safe} edges={["top"]}>
-        {/* HEADER */}
         <View style={styles.header}>
           <Pressable onPress={() => router.back()} style={[styles.backBtn, { backgroundColor: backBg }]} hitSlop={10}>
             <Ionicons name="chevron-back" size={22} color={iconColor} />
@@ -86,12 +108,8 @@ export default function LoginScreen() {
             style={[styles.input, { backgroundColor: inputBg, color: text }]}
           />
 
-          <Pressable
-            onPress={onLogin}
-            disabled={disabled}
-            style={[styles.primaryBtn, disabled && { opacity: 0.5 }]}
-          >
-            <ThemedText style={styles.primaryText}>Entrar</ThemedText>
+          <Pressable onPress={onLogin} disabled={disabled} style={[styles.primaryBtn, disabled && { opacity: 0.5 }]}>
+            <ThemedText style={styles.primaryText}>{loading ? "Entrando..." : "Entrar"}</ThemedText>
           </Pressable>
 
           <Pressable onPress={() => router.replace("/register")} style={styles.link}>

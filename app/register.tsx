@@ -9,6 +9,16 @@ import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
 import { registerUser } from "../src/lib/auth-storage";
 
+function extractApiDetail(error: any): string {
+  const msg = String(error?.message ?? "");
+  // apiFetch lanza Error(texto). Si el backend devuelve JSON {"detail":"..."}
+  try {
+    const parsed = JSON.parse(msg);
+    if (parsed?.detail) return String(parsed.detail);
+  } catch {}
+  return msg;
+}
+
 export default function RegisterScreen() {
   const iconColor = useThemeColor({}, "icon");
   const border = useThemeColor({}, "border");
@@ -26,29 +36,45 @@ export default function RegisterScreen() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const disabled = useMemo(() => {
-    return name.trim().length < 2 || email.trim().length < 3 || password.length < 4;
-  }, [name, email, password]);
+    return loading || name.trim().length < 2 || email.trim().length < 3 || password.length < 4;
+  }, [name, email, password, loading]);
 
   async function onRegister() {
+    if (disabled) return;
+    setLoading(true);
     try {
       await registerUser({ name, email, password });
-      router.back(); // vuelve a Perfil y ya se verá logueado
+      Alert.alert("Cuenta creada", "Ya puedes usar la app.");
+      router.replace("/profile");
     } catch (e: any) {
-      const code = String(e?.message ?? "");
-      if (code === "EMAIL_EXISTS") {
+      const detail = extractApiDetail(e);
+
+      if (detail.includes("EMAIL_EXISTS")) {
         Alert.alert("Ya existe", "Ese email ya tiene una cuenta. Inicia sesión.");
+        router.replace("/login");
         return;
       }
-      Alert.alert("Error", "No se pudo crear la cuenta.");
+
+      if (detail.includes("Network request failed") || detail.includes("Failed to fetch")) {
+        Alert.alert(
+          "Sin conexión",
+          "No se pudo conectar con el servidor. Revisa que EXPO_PUBLIC_API_URL apunte a Render."
+        );
+        return;
+      }
+
+      Alert.alert("Error", detail || "No se pudo crear la cuenta.");
+    } finally {
+      setLoading(false);
     }
   }
 
   return (
     <ThemedView style={styles.screen}>
       <SafeAreaView style={styles.safe} edges={["top"]}>
-        {/* HEADER */}
         <View style={styles.header}>
           <Pressable onPress={() => router.back()} style={[styles.backBtn, { backgroundColor: backBg }]} hitSlop={10}>
             <Ionicons name="chevron-back" size={22} color={iconColor} />
@@ -92,12 +118,8 @@ export default function RegisterScreen() {
             style={[styles.input, { backgroundColor: inputBg, color: text }]}
           />
 
-          <Pressable
-            onPress={onRegister}
-            disabled={disabled}
-            style={[styles.primaryBtn, disabled && { opacity: 0.5 }]}
-          >
-            <ThemedText style={styles.primaryText}>Crear cuenta</ThemedText>
+          <Pressable onPress={onRegister} disabled={disabled} style={[styles.primaryBtn, disabled && { opacity: 0.5 }]}>
+            <ThemedText style={styles.primaryText}>{loading ? "Creando..." : "Crear cuenta"}</ThemedText>
           </Pressable>
 
           <Pressable onPress={() => router.replace("/login")} style={styles.link}>
