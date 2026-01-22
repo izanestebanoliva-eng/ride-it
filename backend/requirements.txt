@@ -8,4 +8,6 @@ psycopg2-binary
 python-multipart
 email-validator
 pydantic[email]
+passlib==1.7.4
+
 
