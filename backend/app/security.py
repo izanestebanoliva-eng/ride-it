@@ -1,13 +1,16 @@
+import os
 from datetime import datetime, timedelta
+
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 
-# ✅ NO bcrypt (evita el lío de passlib+bcrypt en Render/Python 3.13)
+# ✅ Sin bcrypt: evita problemas en Render/Python 3.13
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
-SECRET_KEY = "DEV_SECRET_CHANGE_ME"
+# Lee SECRET_KEY desde Render. Si no existe, usa una por defecto (solo para desarrollo).
+SECRET_KEY = os.getenv("SECRET_KEY", "DEV_SECRET_CHANGE_ME")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_MINUTES = 30
+ACCESS_TOKEN_MINUTES = int(os.getenv("ACCESS_TOKEN_MINUTES", "30"))
 
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
@@ -26,3 +29,4 @@ def decode_access_token(token: str) -> int:
         return int(payload["sub"])
     except JWTError:
         raise ValueError("Token inválido")
+
