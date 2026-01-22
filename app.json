@@ -32,7 +32,8 @@
         "ACCESS_COARSE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE"
-      ]
+      ],
+      "package": "com.izanoliva.motostrava"
     },
     "web": {
       "output": "static",

@@ -22,19 +22,32 @@ import {
   type MarkerId,
 } from "../../src/lib/marker-catalog";
 
+// ✅ TU LOCATION TASK (ajusta solo si el path es distinto)
+import {
+  clearCurrentRoutePoints,
+  getCurrentRoutePoints,
+  startBackgroundTracking,
+  stopBackgroundTracking,
+  type RoutePoint,
+} from "../../src/lib/location-task";
+
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
 
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
-import Animated, { useAnimatedStyle, useSharedValue, withSpring } from "react-native-reanimated";
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from "react-native-reanimated";
 
 type PuntoGPS = {
   lat: number;
   lon: number;
-  t: number;       // timestamp ms
-  acc?: number;    // accuracy (m)
-  spd?: number;    // speed (m/s) si viene del GPS
+  t: number; // timestamp ms
+  acc?: number; // accuracy (m)
+  spd?: number; // speed (m/s)
 };
 
 function distanciaMetros(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -60,26 +73,90 @@ function clamp(v: number, min: number, max: number) {
   return Math.max(min, Math.min(v, max));
 }
 
-// Ajustes de “filtro” (puedes tocar estos si quieres)
-const MAX_ACC_M = 30;            // si accuracy > 30m, ignoramos ese punto
-const MIN_DT_MS = 800;           // ignora actualizaciones demasiado seguidas
-const MIN_STEP_M = 2;            // si se mueve <2m, lo ignoramos (ruido)
-const MAX_SPEED_KMH = 220;       // cap para picos (como pediste)
+// Ajustes de “filtro”
+const MAX_ACC_M = 30;
+const MIN_DT_MS = 800;
+const MIN_STEP_M = 2;
+const MAX_SPEED_KMH = 220;
 const MAX_SPEED_MPS = MAX_SPEED_KMH / 3.6;
 
+// ✅ Para quitar duplicados al fusionar FG+BG
+const DEDUPE_DT_MS = 700; // si llegan casi a la vez…
+const DEDUPE_DIST_M = 1.5; // …y casi mismo sitio => duplicado
+
+function mergeWithoutDupes(points: PuntoGPS[]) {
+  if (points.length <= 1) return points;
+
+  // Orden por tiempo
+  const sorted = [...points].sort((a, b) => a.t - b.t);
+
+  const out: PuntoGPS[] = [];
+  for (const p of sorted) {
+    const last = out[out.length - 1];
+    if (!last) {
+      out.push(p);
+      continue;
+    }
+
+    const dt = Math.abs(p.t - last.t);
+    const d = distanciaMetros(last.lat, last.lon, p.lat, p.lon);
+
+    // Duplicado: mismo punto repetido (o casi)
+    if (dt < DEDUPE_DT_MS && d < DEDUPE_DIST_M) continue;
+
+    out.push(p);
+  }
+
+  return out;
+}
+
+function distanciaTotalFiltrada(puntos: PuntoGPS[]) {
+  if (puntos.length < 2) return 0;
+
+  let total = 0;
+
+  for (let i = 1; i < puntos.length; i++) {
+    const a = puntos[i - 1];
+    const b = puntos[i];
+
+    const dt = b.t - a.t;
+    if (dt <= 0) continue;
+
+    const d = distanciaMetros(a.lat, a.lon, b.lat, b.lon);
+    const mps = d / (dt / 1000);
+
+    if (d < MIN_STEP_M) continue;
+    if (mps > MAX_SPEED_MPS) continue;
+
+    total += d;
+  }
+
+  return Math.round(total);
+}
+
 export default function RecordScreen() {
-  const mapRef = useRef<MapView | null>(null);
+  // ✅ tipado limpio
+  const mapRef = useRef<MapView>(null);
   const insets = useSafeAreaInsets();
 
   const screenBg = useThemeColor({}, "background");
   const textColor = useThemeColor({}, "text");
-  const overlayBg = useThemeColor({ light: "#ffffff", dark: "rgba(0,0,0,0.75)" }, "background");
+  const overlayBg = useThemeColor(
+    { light: "#ffffff", dark: "rgba(0,0,0,0.75)" },
+    "background"
+  );
 
   const [grabando, setGrabando] = useState(false);
   const [puntos, setPuntos] = useState<PuntoGPS[]>([]);
+  const puntosRef = useRef<PuntoGPS[]>([]);
+  useEffect(() => {
+    puntosRef.current = puntos;
+  }, [puntos]);
+
   const [inicioMs, setInicioMs] = useState<number | null>(null);
   const [segundos, setSegundos] = useState(0);
-  const [watcher, setWatcher] = useState<Location.LocationSubscription | null>(null);
+  const [watcher, setWatcher] =
+    useState<Location.LocationSubscription | null>(null);
 
   const [region, setRegion] = useState<Region>({
     latitude: 41.3874,
@@ -88,7 +165,9 @@ export default function RecordScreen() {
     longitudeDelta: 0.08,
   });
 
-  const [posActual, setPosActual] = useState<{ lat: number; lon: number } | null>(null);
+  const [posActual, setPosActual] = useState<{ lat: number; lon: number } | null>(
+    null
+  );
   const [siguiendo, setSiguiendo] = useState(true);
 
   const regionRef = useRef(region);
@@ -123,6 +202,33 @@ export default function RecordScreen() {
     }, [])
   );
 
+  // ✅ Sincroniza puntos del background y los mezcla con los de memoria (sin duplicados)
+  async function syncFromBackground(): Promise<PuntoGPS[]> {
+    try {
+      const bgPoints: RoutePoint[] = await getCurrentRoutePoints();
+      if (!bgPoints || bgPoints.length === 0) return puntosRef.current;
+
+      const mapped: PuntoGPS[] = bgPoints.map((p: any) => ({
+        lat: p.lat ?? p.latitude,
+        lon: p.lon ?? p.longitude,
+        t: p.t ?? p.timestamp ?? Date.now(),
+        acc: (p.accuracy ?? p.acc) ?? undefined,
+        spd: (p.speed ?? p.spd) ?? undefined,
+      }));
+
+      const combined = [...puntosRef.current, ...mapped];
+      const merged = mergeWithoutDupes(combined);
+
+      // ✅ Importante: actualizar state y ref
+      setPuntos(merged);
+      puntosRef.current = merged;
+
+      return merged;
+    } catch {
+      return puntosRef.current;
+    }
+  }
+
   // Ubicación inicial
   useEffect(() => {
     const cargarUbicacionInicial = async () => {
@@ -145,7 +251,7 @@ export default function RecordScreen() {
             Math.abs(prev.longitude - 2.1686) < 0.0001;
 
           if (!usandoDefault) return prev;
-          if (puntos.length > 0) return prev;
+          if (puntosRef.current.length > 0) return prev;
 
           return {
             ...prev,
@@ -159,7 +265,6 @@ export default function RecordScreen() {
     };
 
     cargarUbicacionInicial();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Timer
@@ -171,35 +276,22 @@ export default function RecordScreen() {
     return () => clearInterval(interval);
   }, [grabando, inicioMs]);
 
+  // ✅ Mientras grabas, cada X segundos sincronizamos por si has estado en background
+  useEffect(() => {
+    if (!grabando) return;
+    const t = setInterval(() => {
+      syncFromBackground();
+    }, 2500);
+    return () => clearInterval(t);
+  }, [grabando]);
+
   const coordenadas = useMemo(
     () => puntos.map((p) => ({ latitude: p.lat, longitude: p.lon })),
     [puntos]
   );
 
-  // Distancia total “filtrada” (no suma saltos imposibles)
   const distanciaTotal = useMemo(() => {
-    if (puntos.length < 2) return 0;
-
-    let total = 0;
-
-    for (let i = 1; i < puntos.length; i++) {
-      const a = puntos[i - 1];
-      const b = puntos[i];
-
-      const dt = b.t - a.t;
-      if (dt <= 0) continue;
-
-      const d = distanciaMetros(a.lat, a.lon, b.lat, b.lon);
-      const mps = d / (dt / 1000);
-
-      // filtros: pasos ridículos / picos
-      if (d < MIN_STEP_M) continue;
-      if (mps > MAX_SPEED_MPS) continue;
-
-      total += d;
-    }
-
-    return Math.round(total);
+    return distanciaTotalFiltrada(puntos);
   }, [puntos]);
 
   const velocidadMediaKmh = useMemo(() => {
@@ -207,7 +299,6 @@ export default function RecordScreen() {
     return kmhFrom(distanciaTotal / segundos);
   }, [distanciaTotal, segundos]);
 
-  // Velocidad máxima (usa speed del GPS si viene, si no calcula por distancia/tiempo)
   const velMaxKmh = useMemo(() => {
     if (puntos.length < 2) return 0;
 
@@ -222,7 +313,6 @@ export default function RecordScreen() {
 
       let mps = 0;
 
-      // si el GPS da speed, úsalo (suele ser más estable)
       if (typeof b.spd === "number" && Number.isFinite(b.spd) && b.spd >= 0) {
         mps = b.spd;
       } else {
@@ -244,7 +334,19 @@ export default function RecordScreen() {
       return;
     }
 
+    // ✅ arrancamos background tracking
+    try {
+      await clearCurrentRoutePoints();
+      await startBackgroundTracking();
+    } catch {
+      Alert.alert(
+        "Background no activado",
+        "No se ha podido activar el tracking en segundo plano. Revisa permisos de ubicación (Siempre)."
+      );
+    }
+
     setPuntos([]);
+    puntosRef.current = [];
     setInicioMs(Date.now());
     setSegundos(0);
     setGrabando(true);
@@ -264,6 +366,7 @@ export default function RecordScreen() {
     setRegion((prev) => ({ ...prev, ...firstRegion }));
     mapRef.current?.animateToRegion(firstRegion, 350);
 
+    // ✅ watcher foreground para UI suave
     const sub = await Location.watchPositionAsync(
       {
         accuracy: Location.Accuracy.Highest,
@@ -272,13 +375,13 @@ export default function RecordScreen() {
       },
       (pos) => {
         const acc = pos.coords.accuracy ?? undefined;
-        if (typeof acc === "number" && acc > MAX_ACC_M) return; // ✅ filtra mala precisión
+        if (typeof acc === "number" && acc > MAX_ACC_M) return;
 
         const p: PuntoGPS = {
           lat: pos.coords.latitude,
           lon: pos.coords.longitude,
           t: pos.timestamp ?? Date.now(),
-          acc: acc,
+          acc,
           spd: typeof pos.coords.speed === "number" ? pos.coords.speed : undefined,
         };
 
@@ -295,9 +398,11 @@ export default function RecordScreen() {
           if (d < MIN_STEP_M) return prev;
 
           const mps = d / (dt / 1000);
-          if (mps > MAX_SPEED_MPS) return prev; // ✅ evita saltos locos
+          if (mps > MAX_SPEED_MPS) return prev;
 
-          return [...prev, p];
+          const next = [...prev, p];
+          // ✅ por si el BG mete alguno “entre medias”, mantenemos orden y sin dupes
+          return mergeWithoutDupes(next);
         });
 
         if (siguiendoRef.current) {
@@ -317,30 +422,52 @@ export default function RecordScreen() {
     setWatcher(sub);
   }
 
-  function parar() {
+  async function parar() {
     watcher?.remove();
     setWatcher(null);
     setGrabando(false);
+
+    // ✅ paramos background y sincronizamos puntos finales
+    try {
+      await stopBackgroundTracking();
+    } catch {}
+    await syncFromBackground();
   }
 
-  function resetear() {
+  async function resetear() {
     watcher?.remove();
     setWatcher(null);
 
     setGrabando(false);
     setPuntos([]);
+    puntosRef.current = [];
     setInicioMs(null);
     setSegundos(0);
     setSiguiendo(true);
+
+    // ✅ parar y limpiar background
+    try {
+      await stopBackgroundTracking();
+    } catch {}
+    try {
+      await clearCurrentRoutePoints();
+    } catch {}
   }
 
   async function guardarRuta() {
-    if (puntos.length < 2) {
+    // ✅ 1) “cierra” BG y fusiona definitivo
+    try {
+      await stopBackgroundTracking();
+    } catch {}
+
+    const merged = await syncFromBackground();
+
+    if (merged.length < 2) {
       Alert.alert("Ruta demasiado corta", "Muévete un poco antes de guardar.");
       return;
     }
 
-    // Snapshot (imagen local)
+    // ✅ snapshot (imagen local)
     let previewUri: string | null = null;
     try {
       const snap = await (mapRef.current as any)?.takeSnapshot?.({
@@ -355,12 +482,15 @@ export default function RecordScreen() {
       previewUri = null;
     }
 
+    // ✅ usa la lista mergeada REAL para calcular distancia/guardar
+    const distanciaFinal = distanciaTotalFiltrada(merged);
+
     const ruta = {
       id: Date.now(),
       fecha: new Date().toISOString(),
       duracion: segundos,
-      distancia: distanciaTotal,
-      puntos,
+      distancia: distanciaFinal,
+      puntos: merged,
       previewUri,
       name: "",
     };
@@ -371,7 +501,12 @@ export default function RecordScreen() {
 
     await AsyncStorage.setItem("rutas", JSON.stringify(lista));
     Alert.alert("Ruta guardada ✅");
-    resetear();
+
+    try {
+      await clearCurrentRoutePoints();
+    } catch {}
+
+    await resetear();
   }
 
   function centrarRuta() {
@@ -445,7 +580,10 @@ export default function RecordScreen() {
   });
 
   return (
-    <SafeAreaView edges={["bottom"]} style={[styles.safe, { backgroundColor: screenBg }]}>
+    <SafeAreaView
+      edges={["bottom"]}
+      style={[styles.safe, { backgroundColor: screenBg }]}
+    >
       <View style={[styles.screen, { backgroundColor: screenBg }]}>
         <MapView
           ref={mapRef}
@@ -456,11 +594,20 @@ export default function RecordScreen() {
             if (grabando) setSiguiendo(false);
           }}
         >
-          {coordenadas.length > 0 && <Polyline coordinates={coordenadas} strokeWidth={5} />}
+          {coordenadas.length > 0 && (
+            <Polyline coordinates={coordenadas} strokeWidth={5} />
+          )}
 
           {posActual && (
-            <Marker coordinate={{ latitude: posActual.lat, longitude: posActual.lon }} anchor={{ x: 0.5, y: 0.5 }}>
-              <Image source={MARKERS[markerId].source} style={{ width: 42, height: 42 }} resizeMode="contain" />
+            <Marker
+              coordinate={{ latitude: posActual.lat, longitude: posActual.lon }}
+              anchor={{ x: 0.5, y: 0.5 }}
+            >
+              <Image
+                source={MARKERS[markerId].source}
+                style={{ width: 42, height: 42 }}
+                resizeMode="contain"
+              />
             </Marker>
           )}
         </MapView>
@@ -469,7 +616,11 @@ export default function RecordScreen() {
           <Pressable
             style={[
               styles.fabMini,
-              { backgroundColor: overlayBg, borderWidth: 1, borderColor: "rgba(0,0,0,0.08)" },
+              {
+                backgroundColor: overlayBg,
+                borderWidth: 1,
+                borderColor: "rgba(0,0,0,0.08)",
+              },
             ]}
             onPress={() => {
               if (posActual) seguirUsuario();
@@ -480,7 +631,11 @@ export default function RecordScreen() {
           </Pressable>
 
           <Pressable
-            style={[styles.fabMini, styles.fabMiniBlue, puntos.length < 2 && styles.fabDisabled]}
+            style={[
+              styles.fabMini,
+              styles.fabMiniBlue,
+              puntos.length < 2 && styles.fabDisabled,
+            ]}
             onPress={guardarRuta}
             disabled={puntos.length < 2}
           >
@@ -490,12 +645,18 @@ export default function RecordScreen() {
 
         <View style={styles.primaryBar}>
           {!grabando ? (
-            <Pressable style={[styles.primaryBtn, styles.primaryStart]} onPress={empezar}>
+            <Pressable
+              style={[styles.primaryBtn, styles.primaryStart]}
+              onPress={empezar}
+            >
               <Ionicons name="play" size={18} color="white" />
               <ThemedText style={styles.primaryText}>Iniciar</ThemedText>
             </Pressable>
           ) : (
-            <Pressable style={[styles.primaryBtn, styles.primaryStop]} onPress={parar}>
+            <Pressable
+              style={[styles.primaryBtn, styles.primaryStop]}
+              onPress={parar}
+            >
               <Ionicons name="stop" size={18} color="white" />
               <ThemedText style={styles.primaryText}>Detener</ThemedText>
             </Pressable>
@@ -504,10 +665,18 @@ export default function RecordScreen() {
           <Pressable
             style={[styles.secondaryBtn, { backgroundColor: overlayBg }]}
             onPress={() =>
-              Alert.alert("Reset", "¿Seguro que quieres borrar la grabación actual?", [
-                { text: "Cancelar", style: "cancel" },
-                { text: "Resetear", style: "destructive", onPress: resetear },
-              ])
+              Alert.alert(
+                "Reset",
+                "¿Seguro que quieres borrar la grabación actual?",
+                [
+                  { text: "Cancelar", style: "cancel" },
+                  {
+                    text: "Resetear",
+                    style: "destructive",
+                    onPress: resetear,
+                  },
+                ]
+              )
             }
           >
             <Ionicons name="refresh" size={18} color={textColor} />
@@ -521,9 +690,14 @@ export default function RecordScreen() {
             </View>
 
             <ThemedView style={styles.sheetBody}>
-              <ScrollView contentContainerStyle={styles.sheetContent} showsVerticalScrollIndicator={false}>
+              <ScrollView
+                contentContainerStyle={styles.sheetContent}
+                showsVerticalScrollIndicator={false}
+              >
                 <ThemedText type="title">Recorrido</ThemedText>
-                <ThemedText>{grabando ? "Grabando recorrido" : "Recorrido detenido"}</ThemedText>
+                <ThemedText>
+                  {grabando ? "Grabando recorrido" : "Recorrido detenido"}
+                </ThemedText>
 
                 <View style={styles.metricsRow}>
                   <View style={styles.metric}>
@@ -532,18 +706,24 @@ export default function RecordScreen() {
                   </View>
                   <View style={styles.metric}>
                     <ThemedText style={styles.metricLabel}>Distancia</ThemedText>
-                    <ThemedText style={styles.metricValue}>{distanciaTotal} m</ThemedText>
+                    <ThemedText style={styles.metricValue}>
+                      {distanciaTotal} m
+                    </ThemedText>
                   </View>
                 </View>
 
                 <View style={styles.metricsRow}>
                   <View style={styles.metric}>
                     <ThemedText style={styles.metricLabel}>Vel. media</ThemedText>
-                    <ThemedText style={styles.metricValue}>{velocidadMediaKmh.toFixed(1)} km/h</ThemedText>
+                    <ThemedText style={styles.metricValue}>
+                      {velocidadMediaKmh.toFixed(1)} km/h
+                    </ThemedText>
                   </View>
                   <View style={styles.metric}>
                     <ThemedText style={styles.metricLabel}>Vel. máx</ThemedText>
-                    <ThemedText style={styles.metricValue}>{velMaxKmh.toFixed(1)} km/h</ThemedText>
+                    <ThemedText style={styles.metricValue}>
+                      {velMaxKmh.toFixed(1)} km/h
+                    </ThemedText>
                   </View>
                 </View>
               </ScrollView>

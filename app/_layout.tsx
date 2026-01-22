@@ -1,4 +1,4 @@
-import "@/src/lib/location-task";
+
 import { Stack } from "expo-router";
 import { Text } from "react-native";
 import "react-native-gesture-handler";
