@@ -7,4 +7,5 @@ passlib[bcrypt]
 psycopg2-binary
 python-multipart
 email-validator
+pydantic[email]
 
