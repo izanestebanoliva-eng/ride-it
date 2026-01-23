@@ -2,7 +2,6 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from .db import Base, engine, get_db
@@ -24,62 +23,17 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup():
-    # crea tablas si no existen (en Postgres/Supabase, esto intentará crear/ajustar lo básico)
+    # crea tablas si no existen (en Postgres/Supabase)
     try:
         Base.metadata.create_all(bind=engine)
         print("DB init OK")
     except Exception as e:
+        # No mates el server si la BD tarda / falla temporalmente
         print("DB init ERROR:", repr(e))
 
 @app.get("/")
 def root():
     return {"status": "backend funcionando"}
-
-# ------------------------
-# DEBUG (temporal)
-# ------------------------
-@app.get("/debug/db")
-def debug_db(db: Session = Depends(get_db)):
-    info = db.execute(text("""
-        select
-          current_database() as db,
-          current_user as usr,
-          current_schema() as schema,
-          inet_server_addr()::text as server_ip,
-          inet_server_port() as server_port,
-          current_setting('search_path') as search_path
-    """)).mappings().first()
-
-    count = db.execute(text("select count(*) as n from public.users")).mappings().first()
-    sample = db.execute(text("""
-        select id, email, name, created_at
-        from public.users
-        order by created_at desc
-        limit 5
-    """)).mappings().all()
-
-    return {
-        "conn": dict(info) if info else None,
-        "users_count": int(count["n"]) if count else None,
-        "sample": [dict(r) for r in sample],
-    }
-
-@app.get("/debug/check-email")
-def debug_check_email(email: str, db: Session = Depends(get_db)):
-    email_norm = email.lower().strip()
-
-    orm = db.query(models.User).filter(models.User.email == email_norm).first()
-    sql = db.execute(
-        text("select id, email, name, created_at from public.users where email = :e limit 1"),
-        {"e": email_norm},
-    ).mappings().first()
-
-    return {
-        "email_norm": email_norm,
-        "orm_found": bool(orm),
-        "sql_found": bool(sql),
-        "sql_row": dict(sql) if sql else None,
-    }
 
 # ------------------------
 # Auth
@@ -90,12 +44,10 @@ def register(data: schemas.RegisterIn, db: Session = Depends(get_db)):
     name = data.name.strip()
     password = data.password
 
-    # check rápido
     existing = db.query(models.User).filter(models.User.email == email).first()
     if existing:
         raise HTTPException(status_code=409, detail="EMAIL_EXISTS")
 
-    # OJO: con el models.py nuevo, id se genera como UUID (default=uuid.uuid4)
     user = models.User(
         email=email,
         name=name,
@@ -117,7 +69,6 @@ def register(data: schemas.RegisterIn, db: Session = Depends(get_db)):
         if pgcode == "23505" or "duplicate key" in msg.lower() or "unique" in msg.lower():
             raise HTTPException(status_code=409, detail="EMAIL_EXISTS")
 
-        # 23502, etc.
         raise HTTPException(status_code=400, detail=f"REGISTER_INTEGRITY_ERROR:{pgcode}")
 
     except Exception as e:
@@ -125,7 +76,6 @@ def register(data: schemas.RegisterIn, db: Session = Depends(get_db)):
         print("REGISTER ERROR:", repr(e))
         raise HTTPException(status_code=500, detail="REGISTER_FAILED")
 
-    # schemas.UserOut ya soporta from_attributes, pero devolvemos explícito igualmente
     return schemas.UserOut(id=user.id, email=user.email, name=user.name)
 
 @app.post("/auth/login")
@@ -166,4 +116,5 @@ def get_current_user(
 @app.get("/me", response_model=schemas.UserOut)
 def me(user: models.User = Depends(get_current_user)):
     return schemas.UserOut(id=user.id, email=user.email, name=user.name)
+
 
