@@ -118,3 +118,27 @@ def me(user: models.User = Depends(get_current_user)):
     return schemas.UserOut(id=user.id, email=user.email, name=user.name)
 
 
+# ------------------------
+# Routes
+# ------------------------
+@app.post("/routes", response_model=schemas.RouteOut)
+def create_route(
+    data: schemas.RouteCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    route = models.Route(
+        user_id=user.id,              # ✅ sale del JWT
+        name=data.name.strip(),
+        distance_m=data.distance_m,
+        duration_s=data.duration_s,
+        path=data.path,
+        visibility=data.visibility,
+    )
+
+    db.add(route)
+    db.commit()
+    db.refresh(route)
+    return route
+
+
