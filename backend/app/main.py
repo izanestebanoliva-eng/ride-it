@@ -422,6 +422,22 @@ def get_route_by_id(
 
     return route
 
+# ------------------------
+# Public routes
+# ------------------------
+@app.get("/routes/public", response_model=list[schemas.RouteOut])
+def list_public_routes(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    routes = (
+        db.query(models.Route)
+        .filter(models.Route.visibility == "public")
+        .order_by(models.Route.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    return routes
 
 @app.patch("/routes/{route_id}", response_model=schemas.RouteOut)
 def update_route(
@@ -469,19 +485,4 @@ def delete_route(
     return {"status": "deleted"}
 
 
-# ------------------------
-# Public routes
-# ------------------------
-@app.get("/routes/public", response_model=list[schemas.RouteOut])
-def list_public_routes(
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
-    routes = (
-        db.query(models.Route)
-        .filter(models.Route.visibility == "public")
-        .order_by(models.Route.created_at.desc())
-        .limit(50)
-        .all()
-    )
-    return routes
+
