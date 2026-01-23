@@ -1,9 +1,9 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from .db import Base, engine, get_db
 from . import models, schemas, security
@@ -13,33 +13,29 @@ app = FastAPI()
 # Bearer token
 security_scheme = HTTPBearer()
 
-# CORS (para que la app Expo pueda llamar)
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # en local está bien; en prod puedes restringir
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Crear tablas en la base de datos configurada (Postgres/Supabase en Render)
 @app.on_event("startup")
 def on_startup():
+    # crea tablas si no existen
     try:
         Base.metadata.create_all(bind=engine)
+        print("DB init OK")
     except Exception as e:
-        print("DB init error:", repr(e))
+        print("DB init ERROR:", repr(e))
 
-# ------------------------
-# Root
-# ------------------------
 @app.get("/")
 def root():
-    return {"status": "backend funcionando", "build": "debug-003"}
+    return {"status": "backend funcionando"}
 
-# ------------------------
-# DEBUG DB (temporal)
-# ------------------------
+# 🔎 Debug: info de conexión + conteo
 @app.get("/debug/db")
 def debug_db(db: Session = Depends(get_db)):
     info = db.execute(text("""
@@ -48,11 +44,18 @@ def debug_db(db: Session = Depends(get_db)):
           current_user as usr,
           current_schema() as schema,
           inet_server_addr()::text as server_ip,
-          inet_server_port() as server_port
+          inet_server_port() as server_port,
+          current_setting('search_path') as search_path
     """)).mappings().first()
 
-    count = db.execute(text("select count(*) as n from users")).mappings().first()
-    sample = db.execute(text("select id, email, name, created_at from users order by id desc limit 5")).mappings().all()
+    # OJO: fuerza schema public para no depender de search_path
+    count = db.execute(text("select count(*) as n from public.users")).mappings().first()
+    sample = db.execute(text("""
+        select id, email, name, created_at
+        from public.users
+        order by id desc
+        limit 5
+    """)).mappings().all()
 
     return {
         "conn": dict(info) if info else None,
@@ -60,39 +63,67 @@ def debug_db(db: Session = Depends(get_db)):
         "sample": [dict(r) for r in sample],
     }
 
-# ------------------------
-# Register
-# ------------------------
+# 🔎 Debug: comprueba si un email existe (ORM vs SQL)
+@app.get("/debug/check-email")
+def debug_check_email(email: str, db: Session = Depends(get_db)):
+    email_norm = email.lower().strip()
+
+    orm = db.query(models.User).filter(models.User.email == email_norm).first()
+    sql = db.execute(
+        text("select id, email, name, created_at from public.users where email = :e limit 1"),
+        {"e": email_norm},
+    ).mappings().first()
+
+    return {
+        "email_norm": email_norm,
+        "orm_found": bool(orm),
+        "sql_found": bool(sql),
+        "sql_row": dict(sql) if sql else None,
+    }
+
 @app.post("/auth/register", response_model=schemas.UserOut)
 def register(data: schemas.RegisterIn, db: Session = Depends(get_db)):
     email = data.email.lower().strip()
+    name = data.name.strip()
+    password = data.password
 
+    # check rápido
     existing = db.query(models.User).filter(models.User.email == email).first()
     if existing:
         raise HTTPException(status_code=409, detail="EMAIL_EXISTS")
 
     user = models.User(
         email=email,
-        name=data.name.strip(),
-        password_hash=security.hash_password(data.password),
+        name=name,
+        password_hash=security.hash_password(password),
     )
 
     try:
         db.add(user)
         db.commit()
         db.refresh(user)
-    except IntegrityError:
+    except IntegrityError as e:
         db.rollback()
-        raise HTTPException(status_code=409, detail="EMAIL_EXISTS")
-    except Exception:
+
+        # ✅ distinguir “duplicado” de otros IntegrityError
+        pgcode = getattr(getattr(e, "orig", None), "pgcode", None)
+        msg = str(getattr(e, "orig", e))
+
+        print("REGISTER IntegrityError pgcode=", pgcode, "msg=", msg)
+
+        # Postgres unique_violation = 23505
+        if pgcode == "23505" or "duplicate key" in msg.lower() or "unique" in msg.lower():
+            raise HTTPException(status_code=409, detail="EMAIL_EXISTS")
+
+        raise HTTPException(status_code=400, detail=f"REGISTER_INTEGRITY_ERROR:{pgcode}")
+
+    except Exception as e:
         db.rollback()
+        print("REGISTER ERROR:", repr(e))
         raise HTTPException(status_code=500, detail="REGISTER_FAILED")
 
     return schemas.UserOut(id=user.id, email=user.email, name=user.name)
 
-# ------------------------
-# Login (DEVUELVE TOKEN)
-# ------------------------
 @app.post("/auth/login")
 def login(data: schemas.LoginIn, db: Session = Depends(get_db)):
     email = data.email.lower().strip()
@@ -110,21 +141,13 @@ def login(data: schemas.LoginIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="BAD_PASSWORD")
 
     access_token = security.create_access_token(user.id)
+    return {"access_token": access_token, "token_type": "bearer"}
 
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-    }
-
-# ------------------------
-# Obtener usuario actual desde token
-# ------------------------
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
     db: Session = Depends(get_db),
 ):
     token = credentials.credentials
-
     try:
         user_id = security.decode_access_token(token)
     except Exception:
@@ -136,13 +159,6 @@ def get_current_user(
 
     return user
 
-# ------------------------
-# /me
-# ------------------------
 @app.get("/me", response_model=schemas.UserOut)
 def me(user: models.User = Depends(get_current_user)):
-    return schemas.UserOut(
-        id=user.id,
-        email=user.email,
-        name=user.name,
-    )
+    return schemas.UserOut(id=user.id, email=user.email, name=user.name)
