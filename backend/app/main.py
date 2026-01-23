@@ -117,7 +117,6 @@ def get_current_user(
 def me(user: models.User = Depends(get_current_user)):
     return schemas.UserOut(id=user.id, email=user.email, name=user.name)
 
-
 # ------------------------
 # Routes
 # ------------------------
@@ -142,3 +141,15 @@ def create_route(
     return route
 
 
+@app.get("/routes/mine", response_model=list[schemas.RouteOut])
+def list_my_routes(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    rutas = (
+        db.query(models.Route)
+        .filter(models.Route.user_id == user.id)
+        .order_by(models.Route.created_at.desc())
+        .all()
+    )
+    return rutas
