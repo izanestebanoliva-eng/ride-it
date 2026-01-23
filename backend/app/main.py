@@ -313,3 +313,30 @@ def reject_friend_request(
     db.commit()
     return {"status": "rejected"}
 
+@app.get("/friends", response_model=list[schemas.FriendOut])
+def list_friends(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    # friends table guarda (user_id -> friend_id)
+    friend_rows = (
+        db.query(models.Friend)
+        .filter(models.Friend.user_id == user.id)
+        .all()
+    )
+
+    friend_ids = [row.friend_id for row in friend_rows]
+    if not friend_ids:
+        return []
+
+    friends = (
+        db.query(models.User)
+        .filter(models.User.id.in_(friend_ids))
+        .order_by(models.User.name.asc())
+        .all()
+    )
+
+    # devolvemos solo id+name
+    return [schemas.FriendOut(id=f.id, name=f.name) for f in friends]
+
+
