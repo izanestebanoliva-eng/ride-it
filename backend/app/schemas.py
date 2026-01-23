@@ -62,3 +62,24 @@ class UserSearchOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ------------------------
+# Friend Requests
+# ------------------------
+
+class FriendRequestCreate(BaseModel):
+    # username destino (name)
+    to_name: str
+
+
+class FriendRequestOut(BaseModel):
+    id: UUID
+    from_user_id: UUID
+    to_user_id: UUID
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+        from_attributes = True

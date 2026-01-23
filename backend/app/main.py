@@ -23,12 +23,10 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup():
-    # crea tablas si no existen (en Postgres/Supabase)
     try:
         Base.metadata.create_all(bind=engine)
         print("DB init OK")
     except Exception as e:
-        # No mates el server si la BD tarda / falla temporalmente
         print("DB init ERROR:", repr(e))
 
 @app.get("/")
@@ -65,7 +63,6 @@ def register(data: schemas.RegisterIn, db: Session = Depends(get_db)):
         msg = str(getattr(e, "orig", e))
         print("REGISTER IntegrityError pgcode=", pgcode, "msg=", msg)
 
-        # Postgres unique_violation = 23505
         if pgcode == "23505" or "duplicate key" in msg.lower() or "unique" in msg.lower():
             raise HTTPException(status_code=409, detail="EMAIL_EXISTS")
 
@@ -127,7 +124,7 @@ def create_route(
     user: models.User = Depends(get_current_user),
 ):
     route = models.Route(
-        user_id=user.id,              # ✅ sale del JWT
+        user_id=user.id,
         name=data.name.strip(),
         distance_m=data.distance_m,
         duration_s=data.duration_s,
@@ -139,7 +136,6 @@ def create_route(
     db.commit()
     db.refresh(route)
     return route
-
 
 @app.get("/routes/mine", response_model=list[schemas.RouteOut])
 def list_my_routes(
@@ -164,8 +160,6 @@ def search_users(
     user: models.User = Depends(get_current_user),
 ):
     query = q.strip().lower()
-
-    # evita spam y llamadas inútiles
     if len(query) < 2:
         return []
 
@@ -176,5 +170,146 @@ def search_users(
         .limit(20)
         .all()
     )
-
     return users
+
+# ------------------------
+# Friend Requests
+# ------------------------
+
+@app.post("/friend-requests", response_model=schemas.FriendRequestOut)
+def send_friend_request(
+    data: schemas.FriendRequestCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    to_name = data.to_name.strip().lower()
+    if len(to_name) < 2:
+        raise HTTPException(status_code=400, detail="BAD_TO_NAME")
+
+    if to_name == user.name.strip().lower():
+        raise HTTPException(status_code=400, detail="CANNOT_REQUEST_SELF")
+
+    to_user = db.query(models.User).filter(models.User.name == to_name).first()
+    if not to_user:
+        raise HTTPException(status_code=404, detail="USER_NOT_FOUND")
+
+    # ¿ya sois amigos?
+    existing_friend = (
+        db.query(models.Friend)
+        .filter(models.Friend.user_id == user.id, models.Friend.friend_id == to_user.id)
+        .first()
+    )
+    if existing_friend:
+        raise HTTPException(status_code=409, detail="ALREADY_FRIENDS")
+
+    # ¿ya hay solicitud pendiente en cualquier dirección?
+    pending_same = (
+        db.query(models.FriendRequest)
+        .filter(
+            models.FriendRequest.from_user_id == user.id,
+            models.FriendRequest.to_user_id == to_user.id,
+        )
+        .first()
+    )
+    if pending_same:
+        raise HTTPException(status_code=409, detail="REQUEST_ALREADY_SENT")
+
+    pending_reverse = (
+        db.query(models.FriendRequest)
+        .filter(
+            models.FriendRequest.from_user_id == to_user.id,
+            models.FriendRequest.to_user_id == user.id,
+        )
+        .first()
+    )
+    if pending_reverse:
+        raise HTTPException(status_code=409, detail="REQUEST_ALREADY_RECEIVED")
+
+    fr = models.FriendRequest(from_user_id=user.id, to_user_id=to_user.id)
+    try:
+        db.add(fr)
+        db.commit()
+        db.refresh(fr)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="REQUEST_ALREADY_EXISTS")
+
+    return fr
+
+
+@app.get("/friend-requests/incoming", response_model=list[schemas.FriendRequestOut])
+def list_incoming_requests(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    reqs = (
+        db.query(models.FriendRequest)
+        .filter(models.FriendRequest.to_user_id == user.id)
+        .order_by(models.FriendRequest.created_at.desc())
+        .all()
+    )
+    return reqs
+
+
+@app.get("/friend-requests/outgoing", response_model=list[schemas.FriendRequestOut])
+def list_outgoing_requests(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    reqs = (
+        db.query(models.FriendRequest)
+        .filter(models.FriendRequest.from_user_id == user.id)
+        .order_by(models.FriendRequest.created_at.desc())
+        .all()
+    )
+    return reqs
+
+
+@app.post("/friend-requests/{request_id}/accept")
+def accept_friend_request(
+    request_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    fr = db.query(models.FriendRequest).filter(models.FriendRequest.id == request_id).first()
+    if not fr:
+        raise HTTPException(status_code=404, detail="REQUEST_NOT_FOUND")
+
+    if fr.to_user_id != user.id:
+        raise HTTPException(status_code=403, detail="NOT_YOUR_REQUEST")
+
+    # Crea amistad en ambos sentidos
+    a_to_b = models.Friend(user_id=fr.from_user_id, friend_id=fr.to_user_id)
+    b_to_a = models.Friend(user_id=fr.to_user_id, friend_id=fr.from_user_id)
+
+    try:
+        db.add(a_to_b)
+        db.add(b_to_a)
+        # elimina la solicitud (como decidiste: solicitudes solo pendientes)
+        db.delete(fr)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # si ya existía amistad por algún motivo
+        raise HTTPException(status_code=409, detail="ALREADY_FRIENDS")
+
+    return {"status": "accepted"}
+
+
+@app.post("/friend-requests/{request_id}/reject")
+def reject_friend_request(
+    request_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    fr = db.query(models.FriendRequest).filter(models.FriendRequest.id == request_id).first()
+    if not fr:
+        raise HTTPException(status_code=404, detail="REQUEST_NOT_FOUND")
+
+    if fr.to_user_id != user.id:
+        raise HTTPException(status_code=403, detail="NOT_YOUR_REQUEST")
+
+    db.delete(fr)
+    db.commit()
+    return {"status": "rejected"}
+
