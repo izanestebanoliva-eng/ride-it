@@ -3,12 +3,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import text
 
 from .db import Base, engine, get_db
 from . import models, schemas, security
 
 # Crear tablas en la base de datos configurada (en Render normalmente Postgres/Supabase)
-Base.metadata.create_all(bind=engine)
+@app.on_event("startup")
+def on_startup():
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        print("DB init error:", repr(e))
+
 
 app = FastAPI()
 
@@ -31,6 +38,25 @@ app.add_middleware(
 def root():
     return {"status": "backend funcionando"}
 
+@app.get("/debug/db")
+def debug_db(db: Session = Depends(get_db)):
+    info = db.execute(text("""
+        select
+          current_database() as db,
+          current_user as usr,
+          current_schema() as schema,
+          inet_server_addr()::text as server_ip,
+          inet_server_port() as server_port
+    """)).mappings().first()
+
+    count = db.execute(text("select count(*) as n from users")).mappings().first()
+    sample = db.execute(text("select id, email, name, created_at from users order by id desc limit 5")).mappings().all()
+
+    return {
+        "conn": dict(info) if info else None,
+        "users_count": int(count["n"]) if count else None,
+        "sample": [dict(r) for r in sample],
+    }
 # ------------------------
 # Register
 # ------------------------
