@@ -177,7 +177,6 @@ def search_users(
 # ------------------------
 # Friend Requests
 # ------------------------
-
 @app.post("/friend-requests", response_model=schemas.FriendRequestOut)
 def send_friend_request(
     data: schemas.FriendRequestCreate,
@@ -195,7 +194,6 @@ def send_friend_request(
     if not to_user:
         raise HTTPException(status_code=404, detail="USER_NOT_FOUND")
 
-    # ¿ya sois amigos?
     existing_friend = (
         db.query(models.Friend)
         .filter(models.Friend.user_id == user.id, models.Friend.friend_id == to_user.id)
@@ -204,7 +202,6 @@ def send_friend_request(
     if existing_friend:
         raise HTTPException(status_code=409, detail="ALREADY_FRIENDS")
 
-    # ¿ya hay solicitud pendiente en cualquier dirección?
     pending_same = (
         db.query(models.FriendRequest)
         .filter(
@@ -238,7 +235,6 @@ def send_friend_request(
 
     return fr
 
-
 @app.get("/friend-requests/incoming", response_model=list[schemas.FriendRequestOut])
 def list_incoming_requests(
     db: Session = Depends(get_db),
@@ -251,7 +247,6 @@ def list_incoming_requests(
         .all()
     )
     return reqs
-
 
 @app.get("/friend-requests/outgoing", response_model=list[schemas.FriendRequestOut])
 def list_outgoing_requests(
@@ -266,7 +261,6 @@ def list_outgoing_requests(
     )
     return reqs
 
-
 @app.post("/friend-requests/{request_id}/accept")
 def accept_friend_request(
     request_id: str,
@@ -280,23 +274,19 @@ def accept_friend_request(
     if fr.to_user_id != user.id:
         raise HTTPException(status_code=403, detail="NOT_YOUR_REQUEST")
 
-    # Crea amistad en ambos sentidos
     a_to_b = models.Friend(user_id=fr.from_user_id, friend_id=fr.to_user_id)
     b_to_a = models.Friend(user_id=fr.to_user_id, friend_id=fr.from_user_id)
 
     try:
         db.add(a_to_b)
         db.add(b_to_a)
-        # elimina la solicitud (como decidiste: solicitudes solo pendientes)
         db.delete(fr)
         db.commit()
     except IntegrityError:
         db.rollback()
-        # si ya existía amistad por algún motivo
         raise HTTPException(status_code=409, detail="ALREADY_FRIENDS")
 
     return {"status": "accepted"}
-
 
 @app.post("/friend-requests/{request_id}/reject")
 def reject_friend_request(
@@ -320,7 +310,6 @@ def list_friends(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    # friends table guarda (user_id -> friend_id)
     friend_rows = (
         db.query(models.Friend)
         .filter(models.Friend.user_id == user.id)
@@ -338,29 +327,24 @@ def list_friends(
         .all()
     )
 
-    # devolvemos solo id+name
     return [schemas.FriendOut(id=f.id, name=f.name) for f in friends]
 
-
-
-
+# ------------------------
+# Feed
+# ------------------------
 @app.get("/feed", response_model=list[schemas.FeedRouteOut])
 def get_feed(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    # 1) lista de ids de amigos
     friend_ids = [
         row.friend_id
         for row in db.query(models.Friend).filter(models.Friend.user_id == user.id).all()
     ]
 
-    # 2) construimos condiciones
     cond_mine = (models.Route.user_id == user.id)
-
     cond_public = (models.Route.visibility == "public")
 
-    # friends: solo si tengo amigos
     if friend_ids:
         cond_friends = and_(
             models.Route.visibility == "friends",
@@ -380,50 +364,8 @@ def get_feed(
 
     return routes
 
-
 # ------------------------
-# Route detail + update + delete
-# ------------------------
-
-def can_view_route(db: Session, viewer: models.User, route: models.Route) -> bool:
-    # Dueño siempre ve
-    if route.user_id == viewer.id:
-        return True
-
-    # Public siempre se ve
-    if route.visibility == "public":
-        return True
-
-    # Friends: solo si son amigos
-    if route.visibility == "friends":
-        is_friend = (
-            db.query(models.Friend)
-            .filter(models.Friend.user_id == viewer.id, models.Friend.friend_id == route.user_id)
-            .first()
-        )
-        return is_friend is not None
-
-    # Private: nadie más
-    return False
-
-
-@app.get("/routes/{route_id}", response_model=schemas.RouteDetailOut)
-def get_route_by_id(
-    route_id: UUID,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
-    route = db.query(models.Route).filter(models.Route.id == route_id).first()
-    if not route:
-        raise HTTPException(status_code=404, detail="ROUTE_NOT_FOUND")
-
-    if not can_view_route(db, user, route):
-        raise HTTPException(status_code=403, detail="FORBIDDEN")
-
-    return route
-
-# ------------------------
-# Public routes
+# Public routes (IMPORTANTE: antes que /routes/{route_id})
 # ------------------------
 @app.get("/routes/public", response_model=list[schemas.RouteOut])
 def list_public_routes(
@@ -439,7 +381,39 @@ def list_public_routes(
     )
     return routes
 
-@app.patch("/routes/{route_id}", response_model=schemas.RouteOut)
+# ------------------------
+# Route detail + update + delete
+# ------------------------
+def can_view_route(db: Session, viewer: models.User, route: models.Route) -> bool:
+    if route.user_id == viewer.id:
+        return True
+    if route.visibility == "public":
+        return True
+    if route.visibility == "friends":
+        is_friend = (
+            db.query(models.Friend)
+            .filter(models.Friend.user_id == viewer.id, models.Friend.friend_id == route.user_id)
+            .first()
+        )
+        return is_friend is not None
+    return False
+
+@app.get("/routes/{route_id:uuid}", response_model=schemas.RouteDetailOut)
+def get_route_by_id(
+    route_id: UUID,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    route = db.query(models.Route).filter(models.Route.id == route_id).first()
+    if not route:
+        raise HTTPException(status_code=404, detail="ROUTE_NOT_FOUND")
+
+    if not can_view_route(db, user, route):
+        raise HTTPException(status_code=403, detail="FORBIDDEN")
+
+    return route
+
+@app.patch("/routes/{route_id:uuid}", response_model=schemas.RouteOut)
 def update_route(
     route_id: UUID,
     data: schemas.RouteUpdateIn,
@@ -466,8 +440,7 @@ def update_route(
     db.refresh(route)
     return route
 
-
-@app.delete("/routes/{route_id}", response_model=schemas.RouteDeleteOut)
+@app.delete("/routes/{route_id:uuid}", response_model=schemas.RouteDeleteOut)
 def delete_route(
     route_id: UUID,
     db: Session = Depends(get_db),
@@ -483,6 +456,3 @@ def delete_route(
     db.delete(route)
     db.commit()
     return {"status": "deleted"}
-
-
-
