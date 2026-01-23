@@ -103,3 +103,26 @@ class FeedRouteOut(BaseModel):
     class Config:
         from_attributes = True
 
+
+class RouteDetailOut(BaseModel):
+    id: UUID
+    user_id: UUID
+    name: str
+    distance_m: int
+    duration_s: int
+    path: List[Any]
+    visibility: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class RouteUpdateIn(BaseModel):
+    name: str | None = None
+    visibility: Literal["private", "friends", "public"] | None = None
+
+
+class RouteDeleteOut(BaseModel):
+    status: str
+

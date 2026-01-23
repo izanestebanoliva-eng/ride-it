@@ -4,6 +4,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import or_, and_
+from uuid import UUID
 
 from .db import Base, engine, get_db
 from . import models, schemas, security
@@ -377,4 +378,110 @@ def get_feed(
         .all()
     )
 
+    return routes
+
+
+# ------------------------
+# Route detail + update + delete
+# ------------------------
+
+def can_view_route(db: Session, viewer: models.User, route: models.Route) -> bool:
+    # Dueño siempre ve
+    if route.user_id == viewer.id:
+        return True
+
+    # Public siempre se ve
+    if route.visibility == "public":
+        return True
+
+    # Friends: solo si son amigos
+    if route.visibility == "friends":
+        is_friend = (
+            db.query(models.Friend)
+            .filter(models.Friend.user_id == viewer.id, models.Friend.friend_id == route.user_id)
+            .first()
+        )
+        return is_friend is not None
+
+    # Private: nadie más
+    return False
+
+
+@app.get("/routes/{route_id}", response_model=schemas.RouteDetailOut)
+def get_route_by_id(
+    route_id: UUID,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    route = db.query(models.Route).filter(models.Route.id == route_id).first()
+    if not route:
+        raise HTTPException(status_code=404, detail="ROUTE_NOT_FOUND")
+
+    if not can_view_route(db, user, route):
+        raise HTTPException(status_code=403, detail="FORBIDDEN")
+
+    return route
+
+
+@app.patch("/routes/{route_id}", response_model=schemas.RouteOut)
+def update_route(
+    route_id: UUID,
+    data: schemas.RouteUpdateIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    route = db.query(models.Route).filter(models.Route.id == route_id).first()
+    if not route:
+        raise HTTPException(status_code=404, detail="ROUTE_NOT_FOUND")
+
+    if route.user_id != user.id:
+        raise HTTPException(status_code=403, detail="NOT_OWNER")
+
+    if data.name is not None:
+        new_name = data.name.strip()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="BAD_NAME")
+        route.name = new_name
+
+    if data.visibility is not None:
+        route.visibility = data.visibility
+
+    db.commit()
+    db.refresh(route)
+    return route
+
+
+@app.delete("/routes/{route_id}", response_model=schemas.RouteDeleteOut)
+def delete_route(
+    route_id: UUID,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    route = db.query(models.Route).filter(models.Route.id == route_id).first()
+    if not route:
+        raise HTTPException(status_code=404, detail="ROUTE_NOT_FOUND")
+
+    if route.user_id != user.id:
+        raise HTTPException(status_code=403, detail="NOT_OWNER")
+
+    db.delete(route)
+    db.commit()
+    return {"status": "deleted"}
+
+
+# ------------------------
+# Public routes
+# ------------------------
+@app.get("/routes/public", response_model=list[schemas.RouteOut])
+def list_public_routes(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    routes = (
+        db.query(models.Route)
+        .filter(models.Route.visibility == "public")
+        .order_by(models.Route.created_at.desc())
+        .limit(50)
+        .all()
+    )
     return routes
