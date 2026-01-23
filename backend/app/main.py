@@ -340,3 +340,41 @@ def list_friends(
     return [schemas.FriendOut(id=f.id, name=f.name) for f in friends]
 
 
+
+from sqlalchemy import or_, and_
+
+@app.get("/feed", response_model=list[schemas.FeedRouteOut])
+def get_feed(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    # 1) lista de ids de amigos
+    friend_ids = [
+        row.friend_id
+        for row in db.query(models.Friend).filter(models.Friend.user_id == user.id).all()
+    ]
+
+    # 2) construimos condiciones
+    cond_mine = (models.Route.user_id == user.id)
+
+    cond_public = (models.Route.visibility == "public")
+
+    # friends: solo si tengo amigos
+    if friend_ids:
+        cond_friends = and_(
+            models.Route.visibility == "friends",
+            models.Route.user_id.in_(friend_ids),
+        )
+        cond = or_(cond_mine, cond_public, cond_friends)
+    else:
+        cond = or_(cond_mine, cond_public)
+
+    routes = (
+        db.query(models.Route)
+        .filter(cond)
+        .order_by(models.Route.created_at.desc())
+        .limit(50)
+        .all()
+    )
+
+    return routes
