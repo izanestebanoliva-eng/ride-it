@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import or_, and_
 
 from .db import Base, engine, get_db
 from . import models, schemas, security
@@ -341,7 +342,6 @@ def list_friends(
 
 
 
-from sqlalchemy import or_, and_
 
 @app.get("/feed", response_model=list[schemas.FeedRouteOut])
 def get_feed(
