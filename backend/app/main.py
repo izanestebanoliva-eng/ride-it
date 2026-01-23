@@ -153,3 +153,28 @@ def list_my_routes(
         .all()
     )
     return rutas
+
+# ------------------------
+# Users search
+# ------------------------
+@app.get("/users/search", response_model=list[schemas.UserSearchOut])
+def search_users(
+    q: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    query = q.strip().lower()
+
+    # evita spam y llamadas inútiles
+    if len(query) < 2:
+        return []
+
+    users = (
+        db.query(models.User)
+        .filter(models.User.name.ilike(f"%{query}%"))
+        .order_by(models.User.name.asc())
+        .limit(20)
+        .all()
+    )
+
+    return users

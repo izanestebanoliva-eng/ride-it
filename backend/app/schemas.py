@@ -50,3 +50,15 @@ class RouteOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ------------------------
+# Users search
+# ------------------------
+
+class UserSearchOut(BaseModel):
+    id: UUID
+    name: str
+
+    class Config:
+        from_attributes = True
