@@ -1,5 +1,4 @@
 import { Ionicons } from "@expo/vector-icons";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router, useFocusEffect } from "expo-router";
 import React, { useCallback, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
@@ -9,18 +8,12 @@ import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
 
-type PuntoGPS = { lat: number; lon: number; t: number };
+import { getMyRoutes } from "@/src/lib/api";
 
-type RutaGuardada = {
-  id: number;
-  fecha: string;
-  duracion: number; // segundos
-  distancia: number; // metros
-  puntos: PuntoGPS[];
-};
+/* ───────── helpers ───────── */
 
 function formatoDuracion(segundos: number) {
-  const s = Math.max(0, Math.floor(segundos));
+  const s = Math.max(0, Math.floor(Number(segundos ?? 0)));
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   const r = s % 60;
@@ -31,12 +24,28 @@ function formatoDuracion(segundos: number) {
 }
 
 function formatoDistancia(metros: number) {
-  if (metros >= 1000) return `${(metros / 1000).toFixed(2)} km`;
-  return `${metros} m`;
+  const v = Math.max(0, Number(metros ?? 0));
+  if (v >= 1000) return `${(v / 1000).toFixed(2)} km`;
+  return `${Math.round(v)} m`;
+}
+
+type RouteListItem = {
+  id: string | number;
+  created_at?: string;
+  distance_m?: number;
+  duration_s?: number;
+  name?: string | null;
+  visibility?: "private" | "friends" | "public";
+};
+
+function isNotAuthenticatedError(e: unknown) {
+  const msg = String((e as any)?.message ?? e ?? "");
+  // backend suele devolver: {"detail":"Not authenticated"}
+  return msg.includes("Not authenticated") || msg.includes('"detail"') && msg.includes("Not authenticated");
 }
 
 export default function HomeScreen() {
-  const [rutas, setRutas] = useState<RutaGuardada[]>([]);
+  const [rutas, setRutas] = useState<RouteListItem[]>([]);
   const [cargando, setCargando] = useState(true);
 
   // ✅ colores del tema (arregla modo claro sin tocar el oscuro)
@@ -49,9 +58,20 @@ export default function HomeScreen() {
   const cargarRutas = useCallback(async () => {
     try {
       setCargando(true);
-      const raw = await AsyncStorage.getItem("rutas");
-      const lista: RutaGuardada[] = raw ? JSON.parse(raw) : [];
-      setRutas(Array.isArray(lista) ? lista : []);
+
+      const data: any = await getMyRoutes();
+      const list: RouteListItem[] = Array.isArray(data) ? data : [];
+      setRutas(list);
+    } catch (e) {
+      // ✅ si no hay login, NO explotamos
+      if (isNotAuthenticatedError(e)) {
+        setRutas([]);
+        return;
+      }
+
+      // otros errores: dejamos vacío pero sin crashear
+      setRutas([]);
+      // si quieres, aquí luego metemos un toast/alert con extractApiDetail()
     } finally {
       setCargando(false);
     }
@@ -63,14 +83,26 @@ export default function HomeScreen() {
     }, [cargarRutas])
   );
 
-  const ultima = rutas.length > 0 ? rutas[0] : null;
+  const ultima = useMemo(() => {
+    if (!rutas || rutas.length === 0) return null;
+
+    const sorted = [...rutas].sort((a, b) => {
+      const ta = new Date(a.created_at ?? 0).getTime();
+      const tb = new Date(b.created_at ?? 0).getTime();
+      return tb - ta;
+    });
+
+    return sorted[0] ?? null;
+  }, [rutas]);
 
   const resumen = useMemo(() => {
     return {
       total: rutas.length,
-      ultimaFecha: ultima ? new Date(ultima.fecha).toLocaleString() : "—",
-      ultimaDist: ultima ? formatoDistancia(ultima.distancia) : "—",
-      ultimaDur: ultima ? formatoDuracion(ultima.duracion) : "—",
+      ultimaFecha: ultima?.created_at
+        ? new Date(ultima.created_at).toLocaleString()
+        : "—",
+      ultimaDist: ultima ? formatoDistancia(ultima.distance_m ?? 0) : "—",
+      ultimaDur: ultima ? formatoDuracion(ultima.duration_s ?? 0) : "—",
     };
   }, [rutas, ultima]);
 
@@ -126,30 +158,26 @@ export default function HomeScreen() {
               onPress={() => router.push("/rides")}
             >
               <ThemedText style={styles.bigBtnTitle}>Mis rutas</ThemedText>
-              <ThemedText style={styles.bigBtnSub}>Ver listado y detalle</ThemedText>
+              <ThemedText style={styles.bigBtnSub}>
+                Ver listado y detalle
+              </ThemedText>
             </Pressable>
           </View>
 
-          {/* ÚLTIMA RUTA */}
-          <ThemedView style={styles.card}>
+          {/* ÚLTIMA RUTA (clic en todo el recuadro) */}
+          <Pressable
+            disabled={!ultima}
+            onPress={() => {
+              if (!ultima) return;
+              router.push({
+                pathname: "/ride/[id]",
+                params: { id: String(ultima.id) },
+              });
+            }}
+            style={[styles.card, !ultima && styles.disabled]}
+          >
             <View style={styles.cardTop}>
               <ThemedText type="subtitle">Última ruta</ThemedText>
-
-              <Pressable
-                onPress={() => {
-                  if (!ultima) return;
-                  router.push({
-                    pathname: "/ride/[id]",
-                    params: { id: String(ultima.id) },
-                  });
-                }}
-                disabled={!ultima}
-                style={[styles.smallLink, !ultima && styles.disabled]}
-              >
-                <ThemedText style={styles.smallLinkText}>
-                  {ultima ? "Abrir" : "—"}
-                </ThemedText>
-              </Pressable>
             </View>
 
             <View style={styles.row}>
@@ -166,12 +194,12 @@ export default function HomeScreen() {
 
             <ThemedText style={styles.date}>{resumen.ultimaFecha}</ThemedText>
 
-            {!ultima && (
+            {!ultima && !cargando && (
               <ThemedText style={styles.hint}>
                 Graba una ruta para que aquí aparezca el resumen.
               </ThemedText>
             )}
-          </ThemedView>
+          </Pressable>
 
           {/* REFRESH */}
           <Pressable onPress={cargarRutas} style={styles.refresh}>
@@ -224,7 +252,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
   },
   bigBtnPrimary: { backgroundColor: "#1e88e5" },
-  // 🔥 se queda igual que antes (oscuro guapo)
   bigBtnSecondary: { backgroundColor: "rgba(0,0,0,0.78)" },
 
   bigBtnTitle: { color: "white", fontWeight: "900", fontSize: 18 },
@@ -238,13 +265,6 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
 
-  smallLink: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: "rgba(0,0,0,0.12)",
-  },
-  smallLinkText: { fontWeight: "800" },
   disabled: { opacity: 0.4 },
 
   row: { flexDirection: "row", gap: 12 },

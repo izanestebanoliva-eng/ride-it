@@ -1,36 +1,24 @@
 import { Ionicons } from "@expo/vector-icons";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router, useFocusEffect } from "expo-router";
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
-  Image,
-  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
-  TextInput,
   View,
 } from "react-native";
+import MapView, { Marker, Polyline } from "react-native-maps";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
 
-type PuntoGPS = { lat: number; lon: number; t: number };
+import { getMyRoutes, getRouteById, type RouteOut } from "@/src/lib/api";
 
-type RutaGuardada = {
-  id: number;
-  fecha: string;
-  duracion: number; // segundos
-  distancia: number; // metros
-  puntos: PuntoGPS[];
-  name?: string;
-  previewUri?: string | null; // ✅ imagen guardada (snapshot)
-};
+/* ───────── helpers ───────── */
 
 function fechaHastaMinutos(fechaISO: string) {
   const d = new Date(fechaISO);
@@ -43,129 +31,225 @@ function fechaHastaMinutos(fechaISO: string) {
   });
 }
 
+function formatDist(m: number) {
+  const v = Number(m ?? 0);
+  if (!Number.isFinite(v) || v <= 0) return "0 m";
+  if (v >= 1000) return `${(v / 1000).toFixed(2)} km`;
+  return `${Math.round(v)} m`;
+}
+
+function formatDur(s: number) {
+  const total = Math.max(0, Math.floor(Number(s ?? 0)));
+  const h = Math.floor(total / 3600);
+  const min = Math.floor((total % 3600) / 60);
+  if (h > 0) return `${h} h ${min} min`;
+  return `${min} min`;
+}
+
+type Punto = { lat: number; lon: number };
+function normalizePath(path: any): Punto[] {
+  if (!Array.isArray(path)) return [];
+  return path
+    .map((p: any) => {
+      const lat = p?.lat ?? p?.latitude;
+      const lon = p?.lon ?? p?.longitude;
+      if (typeof lat !== "number" || typeof lon !== "number") return null;
+      return { lat, lon };
+    })
+    .filter(Boolean) as Punto[];
+}
+
+function toCoords(path: Punto[]) {
+  return path.map((p) => ({ latitude: p.lat, longitude: p.lon }));
+}
+
+function isNotAuthenticatedError(e: unknown) {
+  const msg = String((e as any)?.message ?? e ?? "");
+  return msg.includes("Not authenticated");
+}
+
+/* ───────── preview card ───────── */
+
+function RoutePreview({
+  routeId,
+  coords,
+  loading,
+  subtleBg,
+}: {
+  routeId: string;
+  coords: { latitude: number; longitude: number }[] | null;
+  loading: boolean;
+  subtleBg: string;
+}) {
+  const mapRef = useRef<MapView>(null);
+
+  React.useEffect(() => {
+    if (!coords || coords.length < 2) return;
+    const t = setTimeout(() => {
+      mapRef.current?.fitToCoordinates(coords, {
+        edgePadding: { top: 14, right: 14, bottom: 14, left: 14 },
+        animated: false,
+      });
+    }, 120);
+    return () => clearTimeout(t);
+  }, [coords, routeId]);
+
+  if (loading || !coords || coords.length < 2) {
+    return (
+      <View style={[styles.previewFallback, { backgroundColor: subtleBg }]}>
+        {loading ? <ActivityIndicator /> : <Ionicons name="map-outline" size={20} />}
+        <ThemedText style={{ opacity: 0.75, marginTop: 6 }}>
+          {loading ? "Cargando preview…" : "Preview no disponible"}
+        </ThemedText>
+      </View>
+    );
+  }
+
+  const start = coords[0];
+  const end = coords[coords.length - 1];
+
+  return (
+    <View style={styles.previewWrap}>
+      <MapView
+        ref={mapRef}
+        style={styles.previewMap}
+        pointerEvents="none"
+        rotateEnabled={false}
+        pitchEnabled={false}
+        scrollEnabled={false}
+        zoomEnabled={false}
+        toolbarEnabled={false}
+        initialRegion={{
+          latitude: start.latitude,
+          longitude: start.longitude,
+          latitudeDelta: 0.02,
+          longitudeDelta: 0.02,
+        }}
+      >
+        <Polyline coordinates={coords} strokeWidth={4} />
+        <Marker coordinate={start} />
+        <Marker coordinate={end} />
+      </MapView>
+    </View>
+  );
+}
+
+/* ───────── screen ───────── */
+
 export default function RidesScreen() {
   const border = useThemeColor({}, "border");
   const cardBg = useThemeColor({}, "card");
-  const text = useThemeColor({}, "text");
   const icon = useThemeColor({}, "icon");
   const subtleBg = useThemeColor(
     { light: "rgba(0,0,0,0.06)", dark: "rgba(255,255,255,0.06)" },
     "background"
   );
 
-  const [rutas, setRutas] = useState<RutaGuardada[]>([]);
-
-  // ✅ estado refresco (botón + pull-to-refresh)
+  const [routes, setRoutes] = useState<RouteOut[]>([]);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // modal renombrar
-  const [renameOpen, setRenameOpen] = useState(false);
-  const [renameId, setRenameId] = useState<number | null>(null);
-  const [renameText, setRenameText] = useState("");
+  // ✅ si no estás logueado, evitamos peticiones y previews
+  const [isAuthed, setIsAuthed] = useState(true);
 
-  // ✅ CARGA SIN ANIMACIÓN (solo para entrar a la pestaña)
-  const cargarSilencioso = useCallback(async () => {
-    try {
-      const raw = await AsyncStorage.getItem("rutas");
-      const lista: RutaGuardada[] = raw ? JSON.parse(raw) : [];
-      setRutas(lista);
-    } catch {
-      setRutas([]);
-    }
-  }, []);
-
-  // ✅ CARGA CON ANIMACIÓN (solo si el usuario refresca)
-  const cargar = useCallback(async () => {
-    const start = Date.now();
-    setRefreshing(true);
-
-    try {
-      const raw = await AsyncStorage.getItem("rutas");
-      const lista: RutaGuardada[] = raw ? JSON.parse(raw) : [];
-      setRutas(lista);
-    } catch {
-      setRutas([]);
-    } finally {
-      const elapsed = Date.now() - start;
-      const MIN_MS = 600; // 🔥 para que se vea la animación
-
-      if (elapsed < MIN_MS) {
-        setTimeout(() => setRefreshing(false), MIN_MS - elapsed);
-      } else {
-        setRefreshing(false);
-      }
-    }
-  }, []);
-
-  // ✅ Al entrar a la pestaña, NO animamos
-  useFocusEffect(
-    useCallback(() => {
-      cargarSilencioso();
-    }, [cargarSilencioso])
+  const [previewCache, setPreviewCache] = useState<
+    Record<string, { latitude: number; longitude: number }[]>
+  >({});
+  const [previewLoading, setPreviewLoading] = useState<Record<string, boolean>>(
+    {}
   );
 
-  const rutasOrdenadas = useMemo(() => {
-    return [...rutas].sort((a, b) => {
-      const ta = new Date(a.fecha).getTime();
-      const tb = new Date(b.fecha).getTime();
-      return tb - ta;
-    });
-  }, [rutas]);
+  const cargar = useCallback(async (showSpinner: boolean) => {
+    if (showSpinner) setLoading(true);
+    if (!showSpinner) setRefreshing(true);
 
-  async function guardarLista(nueva: RutaGuardada[]) {
-    setRutas(nueva);
-    await AsyncStorage.setItem("rutas", JSON.stringify(nueva));
-  }
+    try {
+      const data = await getMyRoutes();
+      setRoutes(Array.isArray(data) ? data : []);
+      setIsAuthed(true);
+    } catch (e) {
+      if (isNotAuthenticatedError(e)) {
+        // ✅ sin login -> pantalla estable
+        setIsAuthed(false);
+        setRoutes([]);
+        setPreviewCache({});
+        setPreviewLoading({});
+        return;
+      }
 
-  function pedirBorrar(id: number) {
-    Alert.alert("Borrar ruta", "¿Seguro que quieres borrar esta ruta?", [
-      { text: "Cancelar", style: "cancel" },
-      {
-        text: "Borrar",
-        style: "destructive",
-        onPress: async () => {
-          const nueva = rutas.filter((r) => r.id !== id);
-          await guardarLista(nueva);
-        },
-      },
-    ]);
-  }
-
-  function abrirRenombrar(r: RutaGuardada) {
-    setRenameId(r.id);
-    setRenameText((r.name ?? "").trim() || `Ruta #${r.id}`);
-    setRenameOpen(true);
-  }
-
-  async function confirmarRenombrar() {
-    if (renameId === null) return;
-
-    const nuevoNombre = renameText.trim();
-    if (!nuevoNombre) {
-      Alert.alert("Nombre vacío", "Pon un nombre para la ruta.");
-      return;
+      // otro error -> no crashear
+      setRoutes([]);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
+  }, []);
 
-    const nueva = rutas.map((r) =>
-      r.id === renameId ? { ...r, name: nuevoNombre } : r
+  useFocusEffect(
+    useCallback(() => {
+      cargar(true);
+    }, [cargar])
+  );
+
+  const ordenadas = useMemo(() => {
+    return [...routes].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     );
-    await guardarLista(nueva);
+  }, [routes]);
 
-    setRenameOpen(false);
-    setRenameId(null);
-    setRenameText("");
+  const ensurePreview = useCallback(
+    async (id: string) => {
+      // ✅ si no estás logueado, no pedimos detail
+      if (!isAuthed) return;
+
+      if (previewCache[id] || previewLoading[id]) return;
+      setPreviewLoading((p) => ({ ...p, [id]: true }));
+
+      try {
+        const detail: any = await getRouteById(id);
+        const path = normalizePath(detail?.path);
+        const coords = toCoords(path);
+        if (coords.length >= 2) {
+          setPreviewCache((p) => ({ ...p, [id]: coords }));
+        }
+      } catch (e) {
+        // si se expira el token / 401 en detail, desauthed y paramos
+        if (isNotAuthenticatedError(e)) {
+          setIsAuthed(false);
+          setRoutes([]);
+          setPreviewCache({});
+          setPreviewLoading({});
+        }
+      } finally {
+        setPreviewLoading((p) => ({ ...p, [id]: false }));
+      }
+    },
+    [isAuthed, previewCache, previewLoading]
+  );
+
+  if (loading) {
+    return (
+      <ThemedView style={styles.center}>
+        <ActivityIndicator />
+        <ThemedText>Cargando rutas…</ThemedText>
+      </ThemedView>
+    );
   }
 
   return (
     <ThemedView style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={["top"]}>
+        {/* HEADER */}
         <View style={styles.header}>
-          <ThemedText type="title" style={styles.title}>
-            Mis rutas
-          </ThemedText>
+          <View style={{ flex: 1 }}>
+            <ThemedText type="title">Mis rutas</ThemedText>
+            <ThemedText style={{ opacity: 0.7 }}>
+              {isAuthed ? `${ordenadas.length} rutas guardadas` : "Inicia sesión para ver tus rutas"}
+            </ThemedText>
+          </View>
 
           <Pressable
-            onPress={cargar}
+            onPress={() => cargar(false)}
             disabled={refreshing}
             style={[
               styles.refreshBtn,
@@ -178,173 +262,115 @@ export default function RidesScreen() {
             ) : (
               <Ionicons name="refresh" size={18} color={icon} />
             )}
-            <ThemedText style={styles.refreshText}>
+            <ThemedText style={{ fontWeight: "900" }}>
               {refreshing ? "Actualizando…" : "Actualizar"}
             </ThemedText>
           </Pressable>
         </View>
 
-        {rutasOrdenadas.length === 0 ? (
-          <View
-            style={[
-              styles.emptyCard,
-              { backgroundColor: cardBg, borderColor: border },
-            ]}
-          >
-            <ThemedText style={styles.emptyTitle}>
-              No tienes rutas todavía
-            </ThemedText>
-            <ThemedText style={styles.emptySub}>
-              Ve a “Explorar” y pulsa Iniciar para grabar tu primera ruta.
-            </ThemedText>
-
-            <Pressable
-              style={[styles.primaryBtn, { backgroundColor: "#1e88e5" }]}
-              onPress={() => router.push("/explore")}
-            >
-              <ThemedText style={styles.primaryText}>Ir a grabar</ThemedText>
-            </Pressable>
-          </View>
-        ) : null}
-
         <ScrollView
           contentContainerStyle={styles.content}
-          showsVerticalScrollIndicator={false}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={cargar} />
+            <RefreshControl refreshing={refreshing} onRefresh={() => cargar(false)} />
           }
+          showsVerticalScrollIndicator={false}
         >
-          {rutasOrdenadas.map((r) => {
-            const titulo = (r.name ?? "").trim() || `Ruta #${r.id}`;
-            const fecha = fechaHastaMinutos(r.fecha);
-
-            const imgUrl = r.previewUri ?? "";
-
-            return (
-              <Pressable
-                key={r.id}
-                onPress={() => router.push(`/ride/${r.id}`)}
-                style={[
-                  styles.card,
-                  { backgroundColor: cardBg, borderColor: border },
-                ]}
-              >
-                {imgUrl ? (
-                  <Image
-                    source={{ uri: imgUrl }}
-                    style={styles.preview}
-                    resizeMode="cover"
-                  />
-                ) : (
-                  <View
-                    style={[
-                      styles.previewFallback,
-                      { backgroundColor: subtleBg },
-                    ]}
-                  >
-                    <Ionicons name="map-outline" size={22} color={icon} />
-                    <ThemedText style={{ opacity: 0.75 }}>
-                      Preview no disponible
-                    </ThemedText>
-                  </View>
-                )}
-
-                <View style={styles.info}>
-                  <View style={{ flex: 1 }}>
-                    <ThemedText style={styles.cardTitle}>{titulo}</ThemedText>
-                    <ThemedText style={styles.cardSub}>{fecha}</ThemedText>
-                  </View>
-
-                  <View style={styles.actions}>
-                    <Pressable
-                      onPress={() => abrirRenombrar(r)}
-                      style={[styles.iconBtn, { backgroundColor: subtleBg }]}
-                      hitSlop={10}
-                    >
-                      <Ionicons name="pencil" size={18} color={icon} />
-                    </Pressable>
-
-                    <Pressable
-                      onPress={() => pedirBorrar(r.id)}
-                      style={[styles.iconBtn, { backgroundColor: subtleBg }]}
-                      hitSlop={10}
-                    >
-                      <Ionicons
-                        name="trash-outline"
-                        size={18}
-                        color={
-                          String(text) === "#FFFFFF" ? "#ff6b6b" : "#d32f2f"
-                        }
-                      />
-                    </Pressable>
-                  </View>
-                </View>
-              </Pressable>
-            );
-          })}
-
-          <ThemedText style={styles.footer}>Ride it · Mis rutas</ThemedText>
-        </ScrollView>
-
-        <Modal
-          visible={renameOpen}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setRenameOpen(false)}
-        >
-          <View style={styles.modalOverlay}>
+          {/* ✅ NO LOGUEADO */}
+          {!isAuthed && (
             <View
               style={[
-                styles.modalCard,
+                styles.emptyCard,
                 { backgroundColor: cardBg, borderColor: border },
               ]}
             >
-              <ThemedText type="title" style={{ fontSize: 18 }}>
-                Renombrar ruta
+              <Ionicons name="lock-closed-outline" size={28} />
+              <ThemedText style={{ fontWeight: "900", marginTop: 6 }}>
+                No has iniciado sesión
+              </ThemedText>
+              <ThemedText style={{ opacity: 0.75, textAlign: "center" }}>
+                Inicia sesión para ver tus rutas guardadas en la nube.
               </ThemedText>
 
-              <View
-                style={[
-                  styles.inputWrap,
-                  { backgroundColor: subtleBg, borderColor: border },
-                ]}
+              <Pressable
+                onPress={() => router.push("/login")}
+                style={[styles.primaryBtn, { backgroundColor: "#1e88e5" }]}
               >
-                <TextInput
-                  value={renameText}
-                  onChangeText={setRenameText}
-                  placeholder="Nombre de la ruta"
-                  placeholderTextColor="rgba(120,120,120,0.9)"
-                  style={[styles.input, { color: String(text) }]}
-                  autoFocus
-                />
-              </View>
-
-              <View style={styles.modalActions}>
-                <Pressable
-                  onPress={() => setRenameOpen(false)}
-                  style={[styles.modalBtn, { backgroundColor: subtleBg }]}
-                >
-                  <ThemedText style={{ fontWeight: "900" }}>
-                    Cancelar
-                  </ThemedText>
-                </Pressable>
-
-                <Pressable
-                  onPress={confirmarRenombrar}
-                  style={[styles.modalBtn, { backgroundColor: "#1e88e5" }]}
-                >
-                  <ThemedText style={{ fontWeight: "900", color: "white" }}>
-                    Guardar
-                  </ThemedText>
-                </Pressable>
-              </View>
+                <ThemedText style={styles.primaryText}>Ir a iniciar sesión</ThemedText>
+              </Pressable>
             </View>
-          </View>
-        </Modal>
+          )}
+
+          {/* ✅ LOGUEADO PERO VACÍO */}
+          {isAuthed && ordenadas.length === 0 && (
+            <View
+              style={[
+                styles.emptyCard,
+                { backgroundColor: cardBg, borderColor: border },
+              ]}
+            >
+              <Ionicons name="map-outline" size={28} />
+              <ThemedText style={{ fontWeight: "900", marginTop: 6 }}>
+                No tienes rutas todavía
+              </ThemedText>
+              <ThemedText style={{ opacity: 0.75, textAlign: "center" }}>
+                Pulsa en “Grabar” para crear tu primera ruta.
+              </ThemedText>
+
+              <Pressable
+                onPress={() => router.push("/explore")}
+                style={[styles.primaryBtn, { backgroundColor: "#1e88e5" }]}
+              >
+                <ThemedText style={styles.primaryText}>Ir a grabar</ThemedText>
+              </Pressable>
+            </View>
+          )}
+
+          {/* LISTA */}
+          {isAuthed &&
+            ordenadas.map((r) => {
+              const id = String(r.id);
+              if (!previewCache[id] && !previewLoading[id]) ensurePreview(id);
+
+              return (
+                <Pressable
+                  key={id}
+                  onPress={() =>
+                    router.push({ pathname: "/ride/[id]", params: { id } })
+                  }
+                  style={[
+                    styles.card,
+                    { backgroundColor: cardBg, borderColor: border },
+                  ]}
+                >
+                  <RoutePreview
+                    routeId={id}
+                    coords={previewCache[id] ?? null}
+                    loading={!!previewLoading[id]}
+                    subtleBg={subtleBg}
+                  />
+
+                  <View style={styles.info}>
+                    <View style={{ flex: 1 }}>
+                      <ThemedText style={styles.cardTitle}>
+                        {r.name || "Ruta"}
+                      </ThemedText>
+                      <ThemedText style={styles.cardSub}>
+                        {fechaHastaMinutos(r.created_at)} · {formatDist(r.distance_m)} ·{" "}
+                        {formatDur(r.duration_s)}
+                      </ThemedText>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={icon} />
+                  </View>
+                </Pressable>
+              );
+            })}
+        </ScrollView>
       </SafeAreaView>
     </ThemedView>
   );
 }
+
+/* ───────── styles ───────── */
 
 const styles = StyleSheet.create({
   header: {
@@ -352,43 +378,21 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 8,
     flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
-    gap: 10,
+    alignItems: "center",
+    gap: 12,
   },
-  title: { fontSize: 24 },
 
   refreshBtn: {
     flexDirection: "row",
-    alignItems: "center",
     gap: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 14,
+    alignItems: "center",
   },
-  refreshText: { fontWeight: "900", opacity: 0.85 },
 
   content: { padding: 16, gap: 12, paddingBottom: 24 },
-
-  emptyCard: {
-    marginHorizontal: 16,
-    marginTop: 12,
-    borderRadius: 18,
-    padding: 14,
-    gap: 10,
-    borderWidth: 1,
-  },
-  emptyTitle: { fontWeight: "900", fontSize: 16 },
-  emptySub: { opacity: 0.75, lineHeight: 18 },
-
-  primaryBtn: {
-    marginTop: 6,
-    height: 46,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  primaryText: { color: "white", fontWeight: "900" },
 
   card: {
     borderRadius: 18,
@@ -396,10 +400,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
 
-  preview: { height: 120, width: "100%" },
+  previewWrap: { height: 120 },
+  previewMap: { flex: 1 },
+
   previewFallback: {
     height: 120,
-    width: "100%",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
@@ -412,48 +417,31 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   cardTitle: { fontWeight: "900", fontSize: 16 },
-  cardSub: { opacity: 0.7, marginTop: 2, fontSize: 12 },
+  cardSub: { opacity: 0.7, marginTop: 3, fontSize: 12 },
 
-  actions: { flexDirection: "row", gap: 8 },
-  iconBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  footer: { textAlign: "center", opacity: 0.6, paddingVertical: 10 },
-
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.35)",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 16,
-  },
-  modalCard: {
-    width: "100%",
-    maxWidth: 520,
+  emptyCard: {
     borderRadius: 18,
-    padding: 14,
-    gap: 12,
     borderWidth: 1,
+    padding: 20,
+    alignItems: "center",
+    gap: 6,
   },
-  inputWrap: {
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderWidth: 1,
-  },
-  input: { fontSize: 16, fontWeight: "700" },
 
-  modalActions: { flexDirection: "row", gap: 10, justifyContent: "flex-end" },
-  modalBtn: {
-    paddingVertical: 12,
+  primaryBtn: {
+    marginTop: 10,
+    height: 46,
     paddingHorizontal: 16,
-    borderRadius: 14,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
+    alignSelf: "stretch",
+  },
+  primaryText: { color: "white", fontWeight: "900" },
+
+  center: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
   },
 });

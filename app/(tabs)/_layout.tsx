@@ -16,7 +16,8 @@ export default function TabLayout() {
         tabBarButton: HapticTab,
 
         tabBarActiveTintColor: Colors[colorScheme].tint,
-        tabBarInactiveTintColor: colorScheme === "dark" ? "#9aa0a6" : "#6b7280",
+        tabBarInactiveTintColor:
+          colorScheme === "dark" ? "#9aa0a6" : "#6b7280",
 
         tabBarShowLabel: true,
         tabBarLabelStyle: {
@@ -64,7 +65,17 @@ export default function TabLayout() {
         }}
       />
 
-      {/* ✅ NUEVO TAB */}
+      {/* 🔥 SOCIAL */}
+      <Tabs.Screen
+        name="social"
+        options={{
+          title: "Social",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={28} name="globe.americas.fill" color={color} />
+          ),
+        }}
+      />
+
       <Tabs.Screen
         name="profile"
         options={{

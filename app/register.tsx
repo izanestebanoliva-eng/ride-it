@@ -88,11 +88,11 @@ export default function RegisterScreen() {
         </View>
 
         <View style={[styles.card, { backgroundColor: card, borderColor: border }]}>
-          <ThemedText style={styles.label}>Nombre</ThemedText>
+          <ThemedText style={styles.label}>Usuario</ThemedText>
           <TextInput
             value={name}
             onChangeText={setName}
-            placeholder="Tu nombre"
+            placeholder="Usuario"
             placeholderTextColor={String(text) === "#FFFFFF" ? "rgba(255,255,255,0.45)" : "rgba(0,0,0,0.4)"}
             style={[styles.input, { backgroundColor: inputBg, color: text }]}
           />
