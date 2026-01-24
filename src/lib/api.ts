@@ -12,6 +12,13 @@ type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 
 export type RouteVisibility = "private" | "friends" | "public";
 
+export type FriendRequestOut = {
+  id: string; // UUID
+  from_user_id: string; // UUID
+  to_user_id: string; // UUID
+  created_at: string; // ISO
+};
+
 export type RouteOut = {
   id: string; // UUID
   name: string;
@@ -184,6 +191,26 @@ export function deleteRoute(routeId: string) {
     method: "DELETE",
   });
 }
+
+// ----------------------
+// Friend requests
+// ----------------------
+export function getIncomingFriendRequests() {
+  return apiFetch<FriendRequestOut[]>("/friend-requests/incoming", { method: "GET" });
+}
+
+export function getOutgoingFriendRequests() {
+  return apiFetch<FriendRequestOut[]>("/friend-requests/outgoing", { method: "GET" });
+}
+
+export function acceptFriendRequest(requestId: string) {
+  return apiFetch<{ status: string }>(`/friend-requests/${requestId}/accept`, { method: "POST" });
+}
+
+export function rejectFriendRequest(requestId: string) {
+  return apiFetch<{ status: string }>(`/friend-requests/${requestId}/reject`, { method: "POST" });
+}
+
 export function isAuthError(e: unknown) {
   return e instanceof AuthError || (e as any)?.name === "AuthError";
 }

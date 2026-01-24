@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router, useFocusEffect } from "expo-router";
-import React, { useCallback, useState } from "react";
-import { Alert, Pressable, StyleSheet, View } from "react-native";
+import React, { useCallback, useMemo, useState } from "react";
+import { Alert, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ThemedText } from "@/components/themed-text";
@@ -10,22 +10,21 @@ import { useThemeColor } from "@/hooks/use-theme-color";
 import type { SessionUser } from "@/src/lib/auth-storage";
 import { getSession, loginAsGuest, logout } from "@/src/lib/auth-storage";
 
-
-
 export default function ProfileTab() {
-  const iconColor = useThemeColor({}, "icon");
+  const icon = useThemeColor({}, "icon");
   const border = useThemeColor({}, "border");
   const card = useThemeColor({}, "card");
   const subtle = useThemeColor(
     { light: "rgba(0,0,0,0.06)", dark: "rgba(255,255,255,0.06)" },
     "background"
   );
+  const text = useThemeColor({}, "text");
 
-  const [session, setSessionState] = useState<SessionUser | null>(null);
+  const [session, setSession] = useState<SessionUser | null>(null);
 
   const load = useCallback(async () => {
     const s = await getSession();
-    setSessionState(s);
+    setSession(s);
   }, []);
 
   useFocusEffect(
@@ -53,164 +52,313 @@ export default function ProfileTab() {
     ]);
   }
 
+  const isGuest = !!session?.isGuest;
+
+  const headerTitle = useMemo(() => {
+    if (!session) return "Tu cuenta";
+    return session.name;
+  }, [session]);
+
+  const headerSubtitle = useMemo(() => {
+    if (!session) return "Inicia sesión para sincronizar y usar Social.";
+    if (session.isGuest) return "Modo invitado · Rutas locales";
+    return session.email;
+  }, [session]);
+
+  const initials = useMemo(() => {
+    const name = session?.name?.trim() || "R";
+    const parts = name.split(" ").filter(Boolean);
+    const a = parts[0]?.[0] ?? "R";
+    const b = parts[1]?.[0] ?? "";
+    return (a + b).toUpperCase();
+  }, [session]);
+
   return (
     <ThemedView style={styles.screen}>
       <SafeAreaView style={styles.safe} edges={["top"]}>
-        <View style={styles.header}>
-          <ThemedText type="title" style={styles.title}>
-            Perfil
-          </ThemedText>
-        </View>
-
-        {!session ? (
-          <View style={[styles.heroCard, { backgroundColor: card, borderColor: border }]}>
-            <View style={[styles.avatar, { backgroundColor: subtle }]}>
-              <Ionicons name="person" size={26} color={iconColor} />
-            </View>
-
-            <ThemedText style={styles.heroTitle}>Tu cuenta</ThemedText>
-            <ThemedText style={styles.heroSub}>
-              Inicia sesión para guardar tu perfil y sincronizar en el futuro.
+        <ScrollView
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* TOP BAR */}
+          <View style={styles.topBar}>
+            <ThemedText type="title" style={styles.title}>
+              Perfil
             </ThemedText>
 
-            <Pressable style={[styles.bigBtn, styles.bigPrimary]} onPress={() => router.push("/login")}>
-              <ThemedText style={styles.bigTitle}>Iniciar sesión</ThemedText>
-              <ThemedText style={styles.bigSub}>Entrar con email</ThemedText>
-            </Pressable>
-
-            <Pressable style={[styles.bigBtn, styles.bigSecondary]} onPress={() => router.push("/register")}>
-              <ThemedText style={styles.bigTitle}>Crear cuenta</ThemedText>
-              <ThemedText style={styles.bigSub}>Registro rápido</ThemedText>
-            </Pressable>
-
-            <Pressable style={[styles.bigBtn, { backgroundColor: subtle }]} onPress={onGuest}>
-              <ThemedText style={[styles.bigTitle, { color: iconColor }]}>Entrar como invitado</ThemedText>
-              <ThemedText style={[styles.bigSub, { color: iconColor, opacity: 0.7 }]}>
-                Usar rutas locales sin cuenta
-              </ThemedText>
+            <Pressable
+              onPress={() => router.push("/settings")}
+              style={[styles.roundBtn, { backgroundColor: subtle, borderColor: border }]}
+              hitSlop={10}
+            >
+              <Ionicons name="settings-outline" size={20} color={icon} />
             </Pressable>
           </View>
-        ) : (
-          <View style={[styles.profileCard, { backgroundColor: card, borderColor: border }]}>
-            <View style={styles.profileTop}>
-              <View style={[styles.avatar, { backgroundColor: subtle }]}>
-                <Ionicons name={session.isGuest ? "person-outline" : "person"} size={26} color={iconColor} />
+
+          {/* ACCOUNT HEADER CARD */}
+          <Pressable
+            onPress={() => {
+              if (!session) router.push("/login");
+            }}
+            style={[styles.accountCard, { backgroundColor: card, borderColor: border }]}
+          >
+            <View style={styles.accountRow}>
+              <View style={[styles.avatar, { backgroundColor: subtle, borderColor: border }]}>
+                {session ? (
+                  <ThemedText style={styles.initials}>{initials}</ThemedText>
+                ) : (
+                  <Ionicons name="person-outline" size={22} color={icon} />
+                )}
               </View>
 
               <View style={{ flex: 1 }}>
-                <ThemedText style={styles.name}>{session.name}</ThemedText>
-                <ThemedText style={styles.email}>{session.isGuest ? "Modo invitado" : session.email}</ThemedText>
+                <ThemedText style={styles.accountTitle}>{headerTitle}</ThemedText>
+                <ThemedText style={styles.accountSub}>{headerSubtitle}</ThemedText>
               </View>
 
-              <Pressable onPress={() => router.push("/settings")} style={[styles.iconBtn, { backgroundColor: subtle }]}>
-                <Ionicons name="settings-outline" size={20} color={iconColor} />
-              </Pressable>
+              <Ionicons name="chevron-forward" size={18} color={icon} style={{ opacity: 0.75 }} />
             </View>
 
-            <View style={styles.actions}>
-              <Pressable
-                onPress={() => router.push("/rides")}
-                style={[styles.actionBtn, { backgroundColor: subtle }]}
-              >
-                <Ionicons name="list" size={18} color={iconColor} />
-                <ThemedText style={styles.actionText}>Mis rutas</ThemedText>
-              </Pressable>
-
-              <Pressable
-                onPress={() => router.push("/explore")}
-                style={[styles.actionBtn, { backgroundColor: "#1e88e5" }]}
-              >
-                <Ionicons name="navigate" size={18} color="white" />
-                <ThemedText style={[styles.actionText, { color: "white" }]}>Grabar</ThemedText>
-              </Pressable>
+            {/* MINI STATUS STRIP */}
+            <View style={[styles.strip, { backgroundColor: subtle, borderColor: border }]}>
+              <Ionicons
+                name={session ? (session.isGuest ? "sparkles-outline" : "shield-checkmark-outline") : "key-outline"}
+                size={16}
+                color={icon}
+              />
+              <ThemedText style={styles.stripText}>
+                {!session
+                  ? "Accede para sincronizar y publicar"
+                  : session.isGuest
+                  ? "Invitado: todo local (sin nube)"
+                  : "Sesión activa"}
+              </ThemedText>
             </View>
+          </Pressable>
 
-            <Pressable onPress={onLogout} style={[styles.logoutBtn, { borderColor: border }]}>
+          
+
+          {/* SECTION: SOCIAL */}
+          <Section title="Social" card={card} border={border}>
+            <Row
+              icon="mail-unread-outline"
+              title="Solicitudes de amistad"
+              subtitle={session ? (isGuest ? "Requiere cuenta" : "Entrantes y salientes") : "Inicia sesión para verlas"}
+              onPress={() => {
+                if (!session || isGuest) return;
+                router.push("/friend-requests");
+              }}
+              iconColor={icon}
+              subtle={subtle}
+              disabled={!session || isGuest}
+            />
+            <Row
+              icon="people-outline"
+              title="Amigos"
+              subtitle="Gestiona tus conexiones"
+              onPress={() => router.push("/social")}
+              iconColor={icon}
+              subtle={subtle}
+            />
+          </Section>
+
+          {/* SECTION: APP */}
+          <Section title="Aplicación" card={card} border={border}>
+            <Row
+              icon="settings-outline"
+              title="Ajustes"
+              subtitle="Preferencias de la app"
+              onPress={() => router.push("/settings")}
+              iconColor={icon}
+              subtle={subtle}
+            />
+            <Row
+              icon="help-circle-outline"
+              title="Ayuda"
+              subtitle="Consejos y soporte"
+              onPress={() => Alert.alert("Pronto", "Aquí pondremos FAQ / soporte.")}
+              iconColor={icon}
+              subtle={subtle}
+            />
+            <View style={styles.divider} />
+            <ThemedText style={styles.version}>Ride it · v0.1</ThemedText>
+          </Section>
+
+          {/* LOGOUT */}
+          {!!session && (
+            <Pressable
+              onPress={onLogout}
+              style={[styles.logout, { backgroundColor: card, borderColor: border }]}
+            >
               <Ionicons name="log-out-outline" size={18} color="#ff6b6b" />
               <ThemedText style={styles.logoutText}>Cerrar sesión</ThemedText>
             </Pressable>
-          </View>
-        )}
+          )}
+
+          <ThemedText style={styles.footer}>Ride it · Perfil</ThemedText>
+        </ScrollView>
       </SafeAreaView>
     </ThemedView>
   );
 }
 
+/* ───────── components ───────── */
+
+function Section({
+  title,
+  children,
+  card,
+  border,
+}: {
+  title: string;
+  children: React.ReactNode;
+  card: string;
+  border: string;
+}) {
+  return (
+    <View style={{ gap: 8 }}>
+      <ThemedText style={styles.sectionTitle}>{title}</ThemedText>
+      <View style={[styles.sectionCard, { backgroundColor: card, borderColor: border }]}>
+        {children}
+      </View>
+    </View>
+  );
+}
+
+function Row({
+  icon,
+  title,
+  subtitle,
+  onPress,
+  iconColor,
+  subtle,
+  disabled,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  subtitle?: string;
+  onPress: () => void;
+  iconColor: string;
+  subtle: string;
+  disabled?: boolean;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={[
+        styles.row,
+        { opacity: disabled ? 0.55 : 1 },
+      ]}
+    >
+      <View style={[styles.rowIcon, { backgroundColor: subtle }]}>
+        <Ionicons name={icon} size={18} color={iconColor} />
+      </View>
+
+      <View style={{ flex: 1 }}>
+        <ThemedText style={styles.rowTitle}>{title}</ThemedText>
+        {!!subtitle && <ThemedText style={styles.rowSub}>{subtitle}</ThemedText>}
+      </View>
+
+      <Ionicons name="chevron-forward" size={18} color={iconColor} style={{ opacity: 0.6 }} />
+    </Pressable>
+  );
+}
+
+/* ───────── styles ───────── */
+
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   safe: { flex: 1 },
 
-  header: { paddingHorizontal: 18, paddingTop: 12, paddingBottom: 8 },
+  content: { paddingHorizontal: 18, paddingTop: 12, paddingBottom: 28, gap: 14 },
+
+  topBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
   title: { fontSize: 26 },
 
-  heroCard: {
-    marginHorizontal: 18,
-    marginTop: 12,
-    borderRadius: 20,
-    padding: 16,
-    gap: 10,
+  roundBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 16,
     borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
 
-  profileCard: {
-    marginHorizontal: 18,
-    marginTop: 12,
-    borderRadius: 20,
-    padding: 16,
-    gap: 14,
+  accountCard: {
+    borderRadius: 22,
     borderWidth: 1,
+    padding: 14,
+    gap: 12,
   },
+  accountRow: { flexDirection: "row", alignItems: "center", gap: 12 },
 
   avatar: {
     width: 54,
     height: 54,
     borderRadius: 999,
+    borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
+  initials: { fontWeight: "900", fontSize: 16 },
 
-  heroTitle: { fontSize: 18, fontWeight: "900", marginTop: 4 },
-  heroSub: { opacity: 0.75, marginBottom: 8 },
+  accountTitle: { fontSize: 18, fontWeight: "900" },
+  accountSub: { opacity: 0.75, marginTop: 2 },
 
-  bigBtn: { borderRadius: 18, padding: 14, gap: 4 },
-  bigPrimary: { backgroundColor: "#1e88e5" },
-  bigSecondary: { backgroundColor: "rgba(0,0,0,0.78)" },
-  bigTitle: { color: "white", fontWeight: "900", fontSize: 16 },
-  bigSub: { color: "white", opacity: 0.9 },
+  strip: {
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  stripText: { opacity: 0.8, flex: 1 },
 
-  profileTop: { flexDirection: "row", alignItems: "center", gap: 12 },
-  name: { fontSize: 18, fontWeight: "900" },
-  email: { opacity: 0.75 },
+  sectionTitle: { opacity: 0.7, fontWeight: "900", marginLeft: 2 },
+  sectionCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
 
-  iconBtn: {
-    width: 40,
-    height: 40,
+  row: {
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  rowIcon: {
+    width: 36,
+    height: 36,
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
   },
+  rowTitle: { fontWeight: "900" },
+  rowSub: { opacity: 0.7, marginTop: 2, fontSize: 12 },
 
-  actions: { flexDirection: "row", gap: 10 },
-  actionBtn: {
-    flex: 1,
-    height: 48,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    flexDirection: "row",
-    gap: 8,
-  },
-  actionText: { fontWeight: "900" },
+  divider: { height: 1, backgroundColor: "rgba(0,0,0,0.06)", marginHorizontal: 14, marginTop: 8 },
+  version: { opacity: 0.6, textAlign: "center", paddingVertical: 12 },
 
-  logoutBtn: {
-    marginTop: 6,
-    height: 46,
-    borderRadius: 16,
+  logout: {
+    height: 54,
+    borderRadius: 22,
     borderWidth: 1,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    flexDirection: "row",
     gap: 8,
   },
   logoutText: { color: "#ff6b6b", fontWeight: "900" },
+
+  footer: { textAlign: "center", opacity: 0.6, paddingTop: 6 },
 });
