@@ -31,6 +31,8 @@ import {
   type RoutePoint,
 } from "../../src/lib/location-task";
 
+import { createRoute, isAuthError } from "../../src/lib/api";
+
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
@@ -492,7 +494,7 @@ export default function RecordScreen() {
       distancia: distanciaFinal,
       puntos: merged,
       previewUri,
-      name: "",
+      name: `Ruta del ${new Date().toLocaleDateString()}`,
     };
 
     const guardadas = await AsyncStorage.getItem("rutas");
@@ -500,6 +502,37 @@ export default function RecordScreen() {
     lista.unshift(ruta);
 
     await AsyncStorage.setItem("rutas", JSON.stringify(lista));
+
+    // ✅ Intentar subir al servidor
+    try {
+      const nombre =
+        (ruta.name && ruta.name.trim()) ||
+        `Ruta ${new Date().toLocaleDateString()} ${new Date()
+          .toLocaleTimeString()
+          .slice(0, 5)}`;
+
+      const created = await createRoute({
+        name: nombre,
+        distance_m: distanciaFinal,
+        duration_s: segundos,
+        path: merged,
+        visibility: "private",
+      });
+
+      console.log("Ruta subida OK:", created.id);
+    } catch (e) {
+      if (isAuthError(e)) {
+        Alert.alert(
+          "Ruta guardada localmente",
+          "Inicia sesión para sincronizar con el servidor."
+        );
+      } else {
+        console.log("Error subiendo ruta al servidor:", e);
+        // opcional:
+        // Alert.alert("No se pudo subir", "Se guardó localmente. Reintenta luego.");
+      }
+    }
+
     Alert.alert("Ruta guardada ✅");
 
     try {

@@ -1,19 +1,28 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import React, { useState } from "react";
+import { router, useFocusEffect } from "expo-router";
+import React, { useCallback, useState } from "react";
 import {
-  ActivityIndicator,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  View,
+    ActivityIndicator,
+    Alert,
+    Pressable,
+    RefreshControl,
+    ScrollView,
+    StyleSheet,
+    View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
+
+import {
+    acceptFriendRequest,
+    getIncomingFriendRequests,
+    getOutgoingFriendRequests,
+    rejectFriendRequest,
+    type FriendRequestOut,
+} from "@/src/lib/api";
 
 /**
  * Solicitudes de amistad (UI stub)
@@ -36,16 +45,55 @@ export default function FriendRequestsScreen() {
 
   const [tab, setTab] = useState<InnerTab>("incoming");
   const [refreshing, setRefreshing] = useState(false);
-  const [loadingStub, setLoadingStub] = useState(false);
+  const [incoming, setIncoming] = useState<FriendRequestOut[]>([]);
+  const [outgoing, setOutgoing] = useState<FriendRequestOut[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const loadRequests = useCallback(async () => {
+    try {
+      setLoading(true);
+      const [inc, out] = await Promise.all([
+        getIncomingFriendRequests(),
+        getOutgoingFriendRequests(),
+      ]);
+      setIncoming(inc);
+      setOutgoing(out);
+    } catch (e) {
+      Alert.alert("Error", "No se pudieron cargar las solicitudes.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadRequests();
+    }, [loadRequests])
+  );
 
   async function onRefresh() {
     setRefreshing(true);
+    await loadRequests();
+    setRefreshing(false);
+  }
+
+  async function handleAccept(requestId: string) {
     try {
-      setLoadingStub(true);
-      await new Promise((r) => setTimeout(r, 550));
-    } finally {
-      setLoadingStub(false);
-      setRefreshing(false);
+      await acceptFriendRequest(requestId);
+      Alert.alert("Aceptado", "Ahora sois amigos.");
+      await loadRequests();
+    } catch (e) {
+      Alert.alert("Error", "No se pudo aceptar.");
+    }
+  }
+
+  async function handleReject(requestId: string) {
+    try {
+      await rejectFriendRequest(requestId);
+      Alert.alert("Rechazado", "Solicitud rechazada.");
+      await loadRequests();
+    } catch (e) {
+      Alert.alert("Error", "No se pudo rechazar.");
     }
   }
 
@@ -126,28 +174,61 @@ export default function FriendRequestsScreen() {
                     : "Aquí verás a quién se la has enviado."}
                 </ThemedText>
               </View>
-              <ThemedText style={styles.meta}>{loadingStub ? "…" : "0"}</ThemedText>
+              <ThemedText style={styles.meta}>{tab === "incoming" ? incoming.length : outgoing.length}</ThemedText>
             </View>
 
-            {loadingStub ? (
+            {loading ? (
               <View style={styles.loadingBox}>
                 <ActivityIndicator />
                 <ThemedText style={{ opacity: 0.75 }}>Cargando…</ThemedText>
               </View>
-            ) : (
+            ) : (tab === "incoming" ? incoming : outgoing).length === 0 ? (
               <View style={[styles.emptyBox, { backgroundColor: subtleBg, borderColor: border }]}>
                 <Ionicons name="sparkles-outline" size={22} color={icon} />
                 <ThemedText style={{ fontWeight: "900" }}>Nada por aquí</ThemedText>
                 <ThemedText style={{ opacity: 0.75, textAlign: "center", lineHeight: 18 }}>
-                  Cuando lo conectemos al backend aparecerán las solicitudes.
+                  {tab === "incoming" ? "No tienes solicitudes entrantes." : "No has enviado solicitudes."}
                 </ThemedText>
+              </View>
+            ) : (
+              <View style={styles.requestsList}>
+                {(tab === "incoming" ? incoming : outgoing).map((req) => (
+                  <View key={req.id} style={[styles.requestItem, { backgroundColor: subtleBg, borderColor: border }]}>
+                    <View style={styles.requestInfo}>
+                      <ThemedText style={styles.requestText}>
+                        {tab === "incoming" ? `De: Usuario ${req.from_user_id}` : `A: Usuario ${req.to_user_id}`}
+                      </ThemedText>
+                      <ThemedText style={styles.requestDate}>
+                        {new Date(req.created_at).toLocaleDateString()}
+                      </ThemedText>
+                    </View>
+                    {tab === "incoming" && (
+                      <View style={styles.requestActions}>
+                        <Pressable
+                          style={[styles.actionBtn, styles.acceptBtn]}
+                          onPress={() => handleAccept(req.id)}
+                        >
+                          <Ionicons name="checkmark" size={16} color="white" />
+                          <ThemedText style={styles.actionText}>Aceptar</ThemedText>
+                        </Pressable>
+                        <Pressable
+                          style={[styles.actionBtn, styles.rejectBtn]}
+                          onPress={() => handleReject(req.id)}
+                        >
+                          <Ionicons name="close" size={16} color="white" />
+                          <ThemedText style={styles.actionText}>Rechazar</ThemedText>
+                        </Pressable>
+                      </View>
+                    )}
+                  </View>
+                ))}
               </View>
             )}
 
             <View style={[styles.tip, { backgroundColor: subtleBg, borderColor: border }]}>
               <Ionicons name="information-circle-outline" size={18} color={icon} />
               <ThemedText style={{ opacity: 0.8, flex: 1 }}>
-                Pantalla preparada. Luego conectamos: incoming/outgoing + aceptar/rechazar.
+                {tab === "incoming" ? "Acepta o rechaza solicitudes entrantes." : "Aquí verás tus solicitudes enviadas."}
               </ThemedText>
             </View>
           </View>
@@ -286,4 +367,29 @@ const styles = StyleSheet.create({
   },
 
   footer: { textAlign: "center", opacity: 0.6, paddingVertical: 10 },
+
+  requestsList: { gap: 8 },
+  requestItem: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  requestInfo: { flex: 1 },
+  requestText: { fontWeight: "600" },
+  requestDate: { opacity: 0.6, fontSize: 12, marginTop: 2 },
+  requestActions: { flexDirection: "row", gap: 8 },
+  actionBtn: {
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  acceptBtn: { backgroundColor: "#1f8a3b" },
+  rejectBtn: { backgroundColor: "#b3261e" },
+  actionText: { color: "white", fontWeight: "600", fontSize: 12 },
 });

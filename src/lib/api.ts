@@ -211,6 +211,17 @@ export function rejectFriendRequest(requestId: string) {
   return apiFetch<{ status: string }>(`/friend-requests/${requestId}/reject`, { method: "POST" });
 }
 
+export function sendFriendRequest(username: string) {
+  return apiFetch<{ status: string }>("/friend-requests", {
+    method: "POST",
+    body: JSON.stringify({ to_name: username }),
+  });
+}
+
+export function getFriends() {
+  return apiFetch<any[]>("/friends", { method: "GET" });
+}
+
 export function isAuthError(e: unknown) {
   return e instanceof AuthError || (e as any)?.name === "AuthError";
 }
