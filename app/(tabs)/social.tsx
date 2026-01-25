@@ -1,6 +1,6 @@
 // ...existing code...
 import { Ionicons } from "@expo/vector-icons";
-import { useFocusEffect } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import React, { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -26,7 +26,7 @@ import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
 
-import { getFriends, sendFriendRequest } from "@/src/lib/api";
+import { getFeed, getFriends, sendFriendRequest } from "@/src/lib/api";
 
 /**
  * SOCIAL - Rediseño profesional
@@ -66,11 +66,13 @@ export default function SocialScreen() {
   const [username, setUsername] = useState("");
   const [friends, setFriends] = useState<any[]>([]);
   const [loadingFriends, setLoadingFriends] = useState(false);
+  const [feedRoutes, setFeedRoutes] = useState<any[]>([]);
+  const [loadingFeed, setLoadingFeed] = useState(false);
   const [showPanel, setShowPanel] = useState(false);
   const translateX = useSharedValue(Dimensions.get("window").width);
 
   const title = useMemo(() => {
-    if (view === "main") return "Feed";
+    if (view === "main") return "Social";
     return "Amigos";
   }, [view]);
 
@@ -86,11 +88,36 @@ export default function SocialScreen() {
     }
   }, []);
 
+  const loadFeed = useCallback(async () => {
+    try {
+      setLoadingFeed(true);
+      const routes = await getFeed();
+      setFeedRoutes(routes);
+    } catch (e) {
+      console.log("Error cargando feed:", e);
+    } finally {
+      setLoadingFeed(false);
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       loadFriends();
-    }, [loadFriends])
+      loadFeed();
+    }, [loadFriends, loadFeed])
   );
+
+  const publicRoutes = useMemo(() => {
+    return feedRoutes.filter(route => route.visibility === "public");
+  }, [feedRoutes]);
+
+  const friendsRoutes = useMemo(() => {
+    const friendIds = friends.map(f => f.id);
+    return feedRoutes.filter(route => 
+      route.visibility === "public" || 
+      route.visibility === "friends" && friendIds.includes(route.user_id)
+    );
+  }, [feedRoutes, friends]);
 
   async function handleSendRequest() {
     if (!username.trim()) {
@@ -142,8 +169,8 @@ export default function SocialScreen() {
 
             <ThemedText style={styles.subtitle}>
               {view === "main"
-                ? "Actividad de la comunidad"
-                : `${friends.length} conexiones · gestiona tus amigos`}
+                ? "Conecta con la comunidad"
+                : "Personas con las que ruedas"}
             </ThemedText>
           </View>
 
@@ -174,7 +201,7 @@ export default function SocialScreen() {
                   numberOfLines={1}
                   ellipsizeMode="tail"
                 >
-                  Amistades ({friends.length})
+                  Amistades
                 </ThemedText>
               </Pressable>
             </>
@@ -196,6 +223,8 @@ export default function SocialScreen() {
               icon={icon}
               subtleBg={subtleBg}
               friendsCount={friends.length}
+              publicRoutes={publicRoutes}
+              loadingFeed={loadingFeed}
             />
           ) : (
             <FriendsView
@@ -204,6 +233,8 @@ export default function SocialScreen() {
               handleSendRequest={handleSendRequest}
               friends={friends}
               loadingFriends={loadingFriends}
+              friendsRoutes={friendsRoutes}
+              loadingFeed={loadingFeed}
               showPanel={showPanel}
               setShowPanel={setShowPanel}
               translateX={translateX}
@@ -237,9 +268,9 @@ function MainView({
       <View style={styles.quickRow}>
         <QuickAction
           title="Feed"
-          subtitle="Actividad de la comunidad"
+          subtitle="Rutas de todo el mundo"
           iconName="globe-outline"
-          onPress={() => alert("Feed próximamente")}
+          onPress={() => router.push("/social-feed")}
           cardBg={cardBg}
           border={border}
           icon={icon}
@@ -310,7 +341,7 @@ function MainView({
         {/* ✅ antes "Rutas públicas" -> ahora "Amistades" */}
         <ModuleRow
           title="Amigos"
-          subtitle={`${friendsCount} conexiones`}
+          subtitle="Personas con las que ruedas"
           iconName="people-outline"
           onPress={() => setView("friends")}
           border={border}
@@ -470,6 +501,8 @@ function FriendsView({
   handleSendRequest,
   friends,
   loadingFriends,
+  friendsRoutes,
+  loadingFeed,
   showPanel,
   setShowPanel,
   translateX,
@@ -501,15 +534,51 @@ function FriendsView({
       >
         <View style={styles.sectionTop}>
           <ThemedText style={styles.sectionTitle}>Rutas de Amigos</ThemedText>
-          <ThemedText style={styles.sectionMeta}>Próximamente</ThemedText>
+          <ThemedText style={styles.sectionMeta}>{friendsRoutes.length} rutas</ThemedText>
         </View>
-        <View style={styles.emptyBox}>
-          <Ionicons name="map-outline" size={22} color={icon} />
-          <ThemedText style={styles.emptyTitle}>Rutas compartidas</ThemedText>
-          <ThemedText style={styles.emptySub}>
-            Aquí aparecerán las rutas públicas de tus amigos.
-          </ThemedText>
-        </View>
+        {loadingFeed ? (
+          <View style={styles.loadingBox}>
+            <ActivityIndicator />
+            <ThemedText style={{ opacity: 0.75 }}>Cargando rutas…</ThemedText>
+          </View>
+        ) : friendsRoutes.length === 0 ? (
+          <View style={styles.emptyBox}>
+            <Ionicons name="map-outline" size={22} color={icon} />
+            <ThemedText style={styles.emptyTitle}>No hay rutas</ThemedText>
+            <ThemedText style={styles.emptySub}>
+              Las rutas públicas de tus amigos aparecerán aquí.
+            </ThemedText>
+          </View>
+        ) : (
+          <View style={styles.routesList}>
+            {friendsRoutes.slice(0, 3).map((route: any) => (
+              <Pressable
+                key={route.id}
+                onPress={() => router.push(`/ride/${route.id}`)}
+                style={({ pressed }) => [
+                  styles.routeItem,
+                  { opacity: pressed ? 0.7 : 1 },
+                ]}
+              >
+                <Ionicons name="map-outline" size={18} color={icon} />
+                <View style={{ flex: 1 }}>
+                  <ThemedText style={styles.routeName}>{route.name}</ThemedText>
+                  <ThemedText style={styles.routeMeta}>
+                    {route.user_name} · {(route.distance_m / 1000).toFixed(1)} km · {Math.floor(route.duration_s / 60)} min
+                  </ThemedText>
+                </View>
+                <ThemedText style={styles.routeVisibility}>
+                  {route.visibility === "public" ? "Pública" : "Amigos"}
+                </ThemedText>
+              </Pressable>
+            ))}
+            {friendsRoutes.length > 3 && (
+              <ThemedText style={styles.moreRoutes}>
+                +{friendsRoutes.length - 3} más...
+              </ThemedText>
+            )}
+          </View>
+        )}
       </View>
 
       <Animated.View style={[styles.slidingPanel, panelStyle]}>
@@ -891,6 +960,38 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
 
+  routesList: {
+    gap: 8,
+  },
+  routeItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  routeName: {
+    fontWeight: "600",
+    fontSize: 14,
+  },
+  routeMeta: {
+    opacity: 0.7,
+    fontSize: 12,
+    marginTop: 1,
+  },
+  routeVisibility: {
+    opacity: 0.6,
+    fontSize: 10,
+    fontWeight: "700",
+    textTransform: "uppercase",
+  },
+  moreRoutes: {
+    textAlign: "center",
+    opacity: 0.6,
+    fontSize: 12,
+    marginTop: 8,
+  },
+
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.4)",
@@ -922,4 +1023,3 @@ const styles = StyleSheet.create({
   },
   modalBtnText: { fontWeight: "600" },
 });
-// ...existing code...

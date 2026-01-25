@@ -3,10 +3,12 @@ import { router, useFocusEffect } from "expo-router";
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
+  TextInput,
   View,
 } from "react-native";
 import MapView, { Marker, Polyline } from "react-native-maps";
@@ -16,7 +18,7 @@ import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
 
-import { getMyRoutes, getRouteById, type RouteOut } from "@/src/lib/api";
+import { getMyRoutes, getRouteById, type RouteOut, updateRoute } from "@/src/lib/api";
 
 /* ───────── helpers ───────── */
 
@@ -159,6 +161,11 @@ export default function RidesScreen() {
     {}
   );
 
+  // Edit route name state
+  const [editingRoute, setEditingRoute] = useState<RouteOut | null>(null);
+  const [newName, setNewName] = useState("");
+  const [savingName, setSavingName] = useState(false);
+
   const cargar = useCallback(async (showSpinner: boolean) => {
     if (showSpinner) setLoading(true);
     if (!showSpinner) setRefreshing(true);
@@ -226,6 +233,26 @@ export default function RidesScreen() {
     },
     [isAuthed, previewCache, previewLoading]
   );
+
+  const saveRouteName = useCallback(async () => {
+    if (!editingRoute || !newName.trim()) return;
+
+    setSavingName(true);
+    try {
+      await updateRoute(editingRoute.id, { name: newName.trim() });
+      // Update the route in the local state
+      setRoutes(prev => prev.map(r => 
+        r.id === editingRoute.id ? { ...r, name: newName.trim() } : r
+      ));
+      setEditingRoute(null);
+      setNewName("");
+    } catch (e) {
+      console.log("Error updating route name:", e);
+      // Could add error handling here
+    } finally {
+      setSavingName(false);
+    }
+  }, [editingRoute, newName]);
 
   if (loading) {
     return (
@@ -351,9 +378,21 @@ export default function RidesScreen() {
 
                   <View style={styles.info}>
                     <View style={{ flex: 1 }}>
-                      <ThemedText style={styles.cardTitle}>
-                        {r.name || "Ruta"}
-                      </ThemedText>
+                      <View style={styles.titleRow}>
+                        <ThemedText style={styles.cardTitle}>
+                          {r.name || "Ruta"}
+                        </ThemedText>
+                        <Pressable
+                          onPress={() => {
+                            setEditingRoute(r);
+                            setNewName(r.name || "");
+                          }}
+                          style={[styles.editBtn, { backgroundColor: subtleBg, borderColor: border }]}
+                          hitSlop={10}
+                        >
+                          <Ionicons name="pencil" size={14} color={icon} />
+                        </Pressable>
+                      </View>
                       <ThemedText style={styles.cardSub}>
                         {fechaHastaMinutos(r.created_at)} · {formatDist(r.distance_m)} ·{" "}
                         {formatDur(r.duration_s)}
@@ -365,6 +404,49 @@ export default function RidesScreen() {
               );
             })}
         </ScrollView>
+
+        {/* Edit Route Name Modal */}
+        <Modal
+          visible={!!editingRoute}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setEditingRoute(null)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.modalContent, { backgroundColor: cardBg, borderColor: border }]}>
+              <ThemedText style={styles.modalTitle}>Editar nombre de ruta</ThemedText>
+              
+              <TextInput
+                style={[styles.modalInput, { backgroundColor: subtleBg, color: icon, borderColor: border }]}
+                value={newName}
+                onChangeText={setNewName}
+                placeholder="Nombre de la ruta"
+                placeholderTextColor={icon + "80"}
+                maxLength={50}
+                autoFocus={true}
+              />
+              
+              <View style={styles.modalButtons}>
+                <Pressable
+                  onPress={() => setEditingRoute(null)}
+                  style={[styles.modalBtn, { backgroundColor: subtleBg }]}
+                >
+                  <ThemedText style={styles.modalBtnText}>Cancelar</ThemedText>
+                </Pressable>
+                
+                <Pressable
+                  onPress={saveRouteName}
+                  disabled={savingName}
+                  style={[styles.modalBtn, { backgroundColor: "#1e88e5", opacity: savingName ? 0.6 : 1 }]}
+                >
+                  <ThemedText style={[styles.modalBtnText, { color: "white" }]}>
+                    {savingName ? "Guardando..." : "Guardar"}
+                  </ThemedText>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </ThemedView>
   );
@@ -443,5 +525,66 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 12,
+  },
+
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  editBtn: {
+    padding: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+
+  modalContent: {
+    width: "100%",
+    maxWidth: 320,
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: 1,
+  },
+
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    marginBottom: 16,
+    textAlign: "center",
+  },
+
+  modalInput: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    fontSize: 16,
+    marginBottom: 20,
+  },
+
+  modalButtons: {
+    flexDirection: "row",
+    gap: 12,
+  },
+
+  modalBtn: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  modalBtnText: {
+    fontWeight: "600",
+    fontSize: 16,
   },
 });

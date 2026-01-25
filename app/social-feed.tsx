@@ -1,19 +1,21 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Pressable,
-    RefreshControl,
-    ScrollView,
-    StyleSheet,
-    View,
+  ActivityIndicator,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { useThemeColor } from "@/hooks/use-theme-color";
+
+import { getPublicRoutes } from "@/src/lib/api";
 
 export default function SocialFeedScreen() {
   const border = useThemeColor({}, "border");
@@ -25,17 +27,50 @@ export default function SocialFeedScreen() {
   );
 
   const [refreshing, setRefreshing] = useState(false);
-  const [loadingStub, setLoadingStub] = useState(false);
+  const [routes, setRoutes] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadRoutes = useCallback(async () => {
+    try {
+      setLoading(true);
+      const publicRoutes = await getPublicRoutes();
+      setRoutes(publicRoutes || []);
+    } catch (e) {
+      console.log("Error cargando rutas públicas:", e);
+      setRoutes([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadRoutes();
+  }, [loadRoutes]);
 
   async function onRefresh() {
     setRefreshing(true);
     try {
-      setLoadingStub(true);
-      await new Promise((r) => setTimeout(r, 550));
+      await loadRoutes();
     } finally {
-      setLoadingStub(false);
       setRefreshing(false);
     }
+  }
+
+  function formatDistance(meters: number) {
+    if (meters >= 1000) {
+      return `${(meters / 1000).toFixed(1)} km`;
+    }
+    return `${meters} m`;
+  }
+
+  function formatDuration(seconds: number) {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+    return `${minutes}m`;
   }
 
   return (
@@ -56,7 +91,7 @@ export default function SocialFeedScreen() {
               Feed
             </ThemedText>
             <ThemedText style={styles.subtitle}>
-              Rutas públicas y de amigos
+              Rutas públicas de todo el mundo
             </ThemedText>
           </View>
 
@@ -82,34 +117,65 @@ export default function SocialFeedScreen() {
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         >
-          <View style={[styles.card, { backgroundColor: cardBg, borderColor: border }]}>
-            <ThemedText style={styles.cardTitle}>Próximo paso</ThemedText>
-            <ThemedText style={styles.cardSub}>
-              Aquí conectaremos el feed con tu backend:
-            </ThemedText>
-
-            <View style={[styles.line, { backgroundColor: subtleBg, borderColor: border }]}>
-              <Ionicons name="link-outline" size={18} color={icon} />
-              <ThemedText style={{ opacity: 0.8, flex: 1 }}>
-                GET /feed (y quizá paginación)
+          {loading ? (
+            <View style={[styles.loadingCard, { backgroundColor: cardBg, borderColor: border }]}>
+              <ActivityIndicator size="large" />
+              <ThemedText style={styles.loadingText}>Cargando rutas...</ThemedText>
+            </View>
+          ) : routes.length === 0 ? (
+            <View style={[styles.emptyCard, { backgroundColor: cardBg, borderColor: border }]}>
+              <Ionicons name="bicycle-outline" size={48} color={icon} style={{ opacity: 0.5 }} />
+              <ThemedText style={styles.emptyTitle}>No hay rutas públicas</ThemedText>
+              <ThemedText style={styles.emptySub}>
+                Sé el primero en compartir una ruta pública para que aparezca aquí.
               </ThemedText>
             </View>
+          ) : (
+            routes.map((route) => (
+              <Pressable
+                key={route.id}
+                onPress={() => router.push(`/ride/${route.id}`)}
+                style={({ pressed }) => [
+                  styles.routeCard,
+                  {
+                    backgroundColor: cardBg,
+                    borderColor: border,
+                    opacity: pressed ? 0.95 : 1,
+                  },
+                ]}
+              >
+                <View style={styles.routeHeader}>
+                  <View style={[styles.userAvatar, { backgroundColor: subtleBg, borderColor: border }]}>
+                    <Ionicons name="person-outline" size={16} color={icon} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <ThemedText style={styles.routeName} numberOfLines={1}>
+                      {route.name}
+                    </ThemedText>
+                    <ThemedText style={styles.routeUser}>
+                      Usuario • {new Date(route.created_at).toLocaleDateString()}
+                    </ThemedText>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={icon} style={{ opacity: 0.6 }} />
+                </View>
 
-            {loadingStub ? (
-              <View style={styles.loadingBox}>
-                <ActivityIndicator />
-                <ThemedText style={{ opacity: 0.75 }}>Cargando…</ThemedText>
-              </View>
-            ) : (
-              <View style={styles.emptyBox}>
-                <Ionicons name="sparkles-outline" size={22} color={icon} />
-                <ThemedText style={{ fontWeight: "900" }}>Vacío por ahora</ThemedText>
-                <ThemedText style={{ opacity: 0.75, textAlign: "center" }}>
-                  En cuanto conectemos, aquí aparecerán rutas como una red social.
-                </ThemedText>
-              </View>
-            )}
-          </View>
+                <View style={styles.routeStats}>
+                  <View style={styles.stat}>
+                    <Ionicons name="map-outline" size={16} color={icon} />
+                    <ThemedText style={styles.statText}>
+                      {formatDistance(route.distance_m)}
+                    </ThemedText>
+                  </View>
+                  <View style={styles.stat}>
+                    <Ionicons name="time-outline" size={16} color={icon} />
+                    <ThemedText style={styles.statText}>
+                      {formatDuration(route.duration_s)}
+                    </ThemedText>
+                  </View>
+                </View>
+              </Pressable>
+            ))
+          )}
 
           <ThemedText style={styles.footer}>Ride it · Feed</ThemedText>
         </ScrollView>
@@ -149,38 +215,83 @@ const styles = StyleSheet.create({
 
   content: { padding: 16, gap: 12, paddingBottom: 28 },
 
-  card: {
+  loadingCard: {
     borderRadius: 18,
-    padding: 14,
+    padding: 40,
+    alignItems: "center",
+    justifyContent: "center",
     gap: 12,
     borderWidth: 1,
   },
-  cardTitle: { fontWeight: "900", fontSize: 16 },
-  cardSub: { opacity: 0.75, lineHeight: 18 },
+  loadingText: {
+    fontSize: 16,
+    opacity: 0.8,
+  },
 
-  line: {
-    flexDirection: "row",
-    gap: 10,
+  emptyCard: {
+    borderRadius: 18,
+    padding: 40,
     alignItems: "center",
-    padding: 12,
-    borderRadius: 16,
+    justifyContent: "center",
+    gap: 16,
     borderWidth: 1,
   },
-
-  loadingBox: {
-    height: 120,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
+  emptyTitle: {
+    fontSize: 18,
+    fontWeight: "600",
+    textAlign: "center",
   },
-  emptyBox: {
-    height: 140,
+  emptySub: {
+    fontSize: 14,
+    opacity: 0.8,
+    textAlign: "center",
+    lineHeight: 20,
+  },
+
+  routeCard: {
+    borderRadius: 16,
+    padding: 16,
+    gap: 12,
+    borderWidth: 1,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  routeHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  userAvatar: {
+    width: 32,
+    height: 32,
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    paddingHorizontal: 12,
+    borderWidth: 1,
+  },
+  routeName: {
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  routeUser: {
+    fontSize: 12,
+    opacity: 0.7,
+  },
+  routeStats: {
+    flexDirection: "row",
+    gap: 16,
+  },
+  stat: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  statText: {
+    fontSize: 14,
+    opacity: 0.8,
   },
 
   footer: { textAlign: "center", opacity: 0.6, paddingVertical: 10 },
